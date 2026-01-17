@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -28,24 +29,15 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	// Open with WAL mode for better concurrency
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 
-	// Enable WAL mode for better concurrency
-	_, err = db.Exec("PRAGMA journal_mode=WAL")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	
-	// Set busy timeout for concurrent access
-	_, err = db.Exec("PRAGMA busy_timeout=5000")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set busy timeout: %w", err)
-	}
+	// Set connection pool settings for concurrent access
+	db.SetMaxOpenConns(1) // SQLite only supports one writer at a time
+	db.SetMaxIdleConns(1)
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
@@ -59,6 +51,11 @@ func New(dbPath string) (*Store, error) {
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// Ping checks the database connection is alive.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
 }
 
 // migrate runs idempotent schema migrations.
@@ -87,7 +84,7 @@ func (s *Store) migrate() error {
 
 	CREATE TABLE IF NOT EXISTS locks (
 		id TEXT PRIMARY KEY,
-		resource_id TEXT NOT NULL,
+		resource_id TEXT NOT NULL UNIQUE,
 		holder_id TEXT NOT NULL,
 		lock_type TEXT NOT NULL,
 		created_at DATETIME NOT NULL,
@@ -238,6 +235,120 @@ func (s *Store) ClaimTask(id, holderID string) error {
 		models.TaskStatusClaimed, holderID, now, now, id,
 	)
 	return err
+}
+
+// ClaimResult holds the result of an atomic claim operation.
+type ClaimResult struct {
+	Task  *models.Task
+	Lease *models.Lease
+}
+
+// ErrTaskNotClaimable indicates the task cannot be claimed (not found or wrong status).
+var ErrTaskNotClaimable = fmt.Errorf("task not found or not claimable")
+
+// ErrTaskAlreadyLeased indicates the task already has an active lease.
+var ErrTaskAlreadyLeased = fmt.Errorf("task already has an active lease")
+
+// ClaimTaskWithLeaseTx atomically claims a task and creates a lease in a single transaction.
+// It verifies the task exists and is claimable, then updates the task status and creates a lease.
+// On any error, neither the task status nor the lease is persisted.
+func (s *Store) ClaimTaskWithLeaseTx(taskID, holderID string, ttlSec int) (*ClaimResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+
+	// Step 1: Verify task exists and is claimable (pending status)
+	var task models.Task
+	var claimedAt sql.NullTime
+	var claimedBy sql.NullString
+
+	err = tx.QueryRow(
+		`SELECT id, title, description, status, claimed_by, claimed_at, created_at, updated_at
+		 FROM tasks WHERE id = ?`,
+		taskID,
+	).Scan(&task.ID, &task.Title, &task.Description, &task.Status, &claimedBy, &claimedAt, &task.CreatedAt, &task.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, ErrTaskNotClaimable
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query task: %w", err)
+	}
+
+	// Check if task is in a claimable state (pending)
+	if task.Status != models.TaskStatusPending {
+		return nil, ErrTaskNotClaimable
+	}
+
+	// Step 2: Check for existing active lease
+	var existingLeaseID string
+	err = tx.QueryRow(
+		`SELECT id FROM leases WHERE task_id = ? AND expires_at > ?`,
+		taskID, now,
+	).Scan(&existingLeaseID)
+
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("check existing lease: %w", err)
+	}
+	if existingLeaseID != "" {
+		return nil, ErrTaskAlreadyLeased
+	}
+
+	// Step 3: Update task status to claimed
+	result, err := tx.Exec(
+		`UPDATE tasks SET status = ?, claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		models.TaskStatusClaimed, holderID, now, now, taskID, models.TaskStatusPending,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update task status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("check rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		// Task was modified by another process between our check and update
+		return nil, ErrTaskNotClaimable
+	}
+
+	// Step 4: Create lease
+	lease := &models.Lease{
+		ID:        uuid.New().String(),
+		TaskID:    taskID,
+		HolderID:  holderID,
+		TTLSec:    ttlSec,
+		ExpiresAt: now.Add(time.Duration(ttlSec) * time.Second),
+		CreatedAt: now,
+	}
+
+	_, err = tx.Exec(
+		`INSERT INTO leases (id, task_id, holder_id, ttl_sec, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		lease.ID, lease.TaskID, lease.HolderID, lease.TTLSec, lease.ExpiresAt, lease.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert lease: %w", err)
+	}
+
+	// Step 5: Commit transaction
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	// Update task with claimed info for return
+	task.Status = models.TaskStatusClaimed
+	task.ClaimedBy = holderID
+	task.ClaimedAt = &now
+	task.UpdatedAt = now
+
+	return &ClaimResult{
+		Task:  &task,
+		Lease: lease,
+	}, nil
 }
 
 // ReleaseTask releases a task claim.
@@ -394,24 +505,51 @@ func (s *Store) DeleteLease(leaseID string) error {
 
 // --- Lock Operations ---
 
-// AcquireLock attempts to acquire a lock on a resource.
+// ErrResourceLocked indicates the resource is already locked by another holder.
+var ErrResourceLocked = fmt.Errorf("resource already locked")
+
+// LockConflict contains information about an existing lock when acquisition fails.
+type LockConflict struct {
+	HolderID  string
+	ExpiresAt time.Time
+}
+
+// AcquireLock attempts to acquire a lock on a resource atomically.
+// It first cleans up expired locks, then attempts to insert a new lock.
+// If a lock already exists, it returns ErrResourceLocked.
 func (s *Store) AcquireLock(resourceID, holderID, lockType string, ttlSec int) (*models.Lock, error) {
+	// Use IMMEDIATE transaction to acquire write lock early and prevent races
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelDefault})
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	now := time.Now().UTC()
 
-	// Check for existing non-expired lock
-	var existingID string
-	err := s.db.QueryRow(
-		`SELECT id FROM locks WHERE resource_id = ? AND expires_at > ?`,
+	// Step 1: Clean up expired locks for this resource within the transaction
+	_, err = tx.Exec(`DELETE FROM locks WHERE resource_id = ? AND expires_at <= ?`, resourceID, now)
+	if err != nil {
+		return nil, fmt.Errorf("clean expired locks: %w", err)
+	}
+
+	// Step 2: Check for existing non-expired lock
+	var existingHolder string
+	var existingExpires time.Time
+	err = tx.QueryRow(
+		`SELECT holder_id, expires_at FROM locks WHERE resource_id = ? AND expires_at > ?`,
 		resourceID, now,
-	).Scan(&existingID)
+	).Scan(&existingHolder, &existingExpires)
 
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("check existing lock: %w", err)
 	}
-	if existingID != "" {
-		return nil, fmt.Errorf("resource already locked")
+	if err != sql.ErrNoRows {
+		// Lock exists and is not expired
+		return nil, ErrResourceLocked
 	}
 
+	// Step 3: Insert new lock
 	lock := &models.Lock{
 		ID:         uuid.New().String(),
 		ResourceID: resourceID,
@@ -421,12 +559,42 @@ func (s *Store) AcquireLock(resourceID, holderID, lockType string, ttlSec int) (
 		ExpiresAt:  now.Add(time.Duration(ttlSec) * time.Second),
 	}
 
-	_, err = s.db.Exec(
+	_, err = tx.Exec(
 		`INSERT INTO locks (id, resource_id, holder_id, lock_type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		lock.ID, lock.ResourceID, lock.HolderID, lock.LockType, lock.CreatedAt, lock.ExpiresAt,
 	)
 	if err != nil {
+		// Check if this is a UNIQUE constraint violation (race condition)
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "unique constraint") {
+			return nil, ErrResourceLocked
+		}
 		return nil, fmt.Errorf("insert lock: %w", err)
+	}
+
+	// Step 4: Commit transaction
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return lock, nil
+}
+
+// GetLock retrieves a lock by resource ID if it exists and is not expired.
+func (s *Store) GetLock(resourceID string) (*models.Lock, error) {
+	now := time.Now().UTC()
+	lock := &models.Lock{}
+
+	err := s.db.QueryRow(
+		`SELECT id, resource_id, holder_id, lock_type, created_at, expires_at
+		 FROM locks WHERE resource_id = ? AND expires_at > ?`,
+		resourceID, now,
+	).Scan(&lock.ID, &lock.ResourceID, &lock.HolderID, &lock.LockType, &lock.CreatedAt, &lock.ExpiresAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query lock: %w", err)
 	}
 	return lock, nil
 }

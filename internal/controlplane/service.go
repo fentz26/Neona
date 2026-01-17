@@ -50,30 +50,22 @@ func (s *Service) ListTasks(status string) ([]models.Task, error) {
 	return s.store.ListTasks(status)
 }
 
-// ClaimTask claims a task with a lease.
+// ClaimTask claims a task with a lease atomically.
 func (s *Service) ClaimTask(taskID, holderID string, ttlSec int) (*models.Lease, error) {
-	// Check existing lease
-	existing, err := s.store.GetActiveLease(taskID)
+	result, err := s.store.ClaimTaskWithLeaseTx(taskID, holderID, ttlSec)
 	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		return nil, ErrAlreadyClaimed
-	}
-
-	// Claim task
-	if err := s.store.ClaimTask(taskID, holderID); err != nil {
-		return nil, err
-	}
-
-	// Create lease
-	lease, err := s.store.CreateLease(taskID, holderID, ttlSec)
-	if err != nil {
+		// Map store errors to service errors
+		if err == store.ErrTaskNotClaimable {
+			return nil, ErrNotFound
+		}
+		if err == store.ErrTaskAlreadyLeased {
+			return nil, ErrAlreadyClaimed
+		}
 		return nil, err
 	}
 
 	s.pdr.Record("task.claim", map[string]interface{}{"task_id": taskID, "holder_id": holderID, "ttl": ttlSec}, "success", taskID, "")
-	return lease, nil
+	return result.Lease, nil
 }
 
 // ReleaseTask releases a task claim.

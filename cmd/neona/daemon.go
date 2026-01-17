@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -45,7 +46,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
 
 	// Initialize components
 	pdr := audit.NewPDRWriter(s)
@@ -54,7 +54,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create service and server
 	service := controlplane.NewService(s, pdr, connector)
-	server := controlplane.NewServer(service, listenAddr)
+	server := controlplane.NewServer(service, s, listenAddr)
 	
 	// Create and start scheduler
 	schedulerCfg := scheduler.DefaultConfig()
@@ -62,30 +62,48 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	sched.Start()
 	defer sched.Stop()
 
-	// Handle graceful shutdown
-	shutdownCh := make(chan os.Signal, 1)
-	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
-	
-	// Start server in a goroutine
+	// Set up signal handling for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Channel to receive server errors
 	serverErr := make(chan error, 1)
+
+	// Start server in goroutine
 	go func() {
-		serverErr <- server.Start()
+		err := server.Start()
+		if err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
 	}()
-	
+
 	// Wait for shutdown signal or server error
 	select {
-	case <-shutdownCh:
-		log.Println("Shutting down...")
-		// Gracefully shutdown HTTP server with timeout
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("HTTP server shutdown error: %v", err)
+	case sig := <-sigCh:
+		log.Printf("Received signal %v, initiating graceful shutdown...", sig)
+	case err := <-serverErr:
+		if err != nil {
+			log.Printf("Server error: %v", err)
+			s.Close()
 			return err
 		}
-		log.Println("HTTP server stopped gracefully")
-		return nil
-	case err := <-serverErr:
-		return err
 	}
+
+	// Graceful shutdown with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	log.Println("Shutting down HTTP server...")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	log.Println("Closing database connection...")
+	if err := s.Close(); err != nil {
+		log.Printf("Database close error: %v", err)
+	}
+
+	log.Println("Shutdown complete")
+	return nil
 }
