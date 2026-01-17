@@ -9,19 +9,25 @@ import (
 	"time"
 
 	"github.com/fentz26/neona/internal/models"
+	"github.com/fentz26/neona/internal/store"
 )
+
+// Version is set at build time or defaults to "dev".
+var Version = "dev"
 
 // Server provides the HTTP API for Neona.
 type Server struct {
 	service *Service
+	store   *store.Store
 	addr    string
 	server  *http.Server
 }
 
 // NewServer creates a new HTTP server.
-func NewServer(service *Service, addr string) *Server {
+func NewServer(service *Service, s *store.Store, addr string) *Server {
 	return &Server{
 		service: service,
+		store:   s,
 		addr:    addr,
 	}
 }
@@ -37,11 +43,8 @@ func (s *Server) Start() error {
 	// Memory endpoints
 	mux.HandleFunc("/memory", s.handleMemory)
 
-	// Health check
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
-	})
+	// Health check with DB ping
+	mux.HandleFunc("/health", s.handleHealth)
 
 	s.server = &http.Server{
 		Addr:         s.addr,
@@ -57,6 +60,47 @@ func (s *Server) Start() error {
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
+}
+
+// HealthResponse represents the /health endpoint response.
+type HealthResponse struct {
+	OK      bool   `json:"ok"`
+	DB      string `json:"db"`
+	Version string `json:"version"`
+	Time    string `json:"time"`
+}
+
+// handleHealth handles GET /health
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	resp := HealthResponse{
+		OK:      true,
+		DB:      "ok",
+		Version: Version,
+		Time:    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Perform lightweight DB ping
+	if err := s.store.Ping(ctx); err != nil {
+		log.Printf("health check: database ping failed: %v", err)
+		resp.OK = false
+		resp.DB = "unavailable"
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
 }
 
 // handleTasks handles POST /tasks and GET /tasks

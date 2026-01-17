@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -277,52 +274,7 @@ func runTaskLog(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// --- API Helpers ---
-
-func apiGet(path string) ([]byte, error) {
-	url := apiAddr + path
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
-	}
-
-	return body, nil
-}
-
-func apiPost(path string, data interface{}) ([]byte, error) {
-	url := apiAddr + path
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := http.Post(url, "application/json", bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
-	}
-
-	return body, nil
-}
+// --- Helpers ---
 
 func truncate(s string, n int) string {
 	if len(s) <= n {

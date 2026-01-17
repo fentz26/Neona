@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/fentz26/neona/internal/audit"
 	"github.com/fentz26/neona/internal/connectors/localexec"
@@ -42,7 +45,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
 
 	// Initialize components
 	pdr := audit.NewPDRWriter(s)
@@ -51,17 +53,50 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create service and server
 	service := controlplane.NewService(s, pdr, connector)
-	server := controlplane.NewServer(service, listenAddr)
+	server := controlplane.NewServer(service, s, listenAddr)
 
-	// Handle graceful shutdown
+	// Set up signal handling for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Channel to receive server errors
+	serverErr := make(chan error, 1)
+
+	// Start server in goroutine
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		log.Println("Shutting down...")
-		os.Exit(0)
+		err := server.Start()
+		if err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
 	}()
 
-	// Start server
-	return server.Start()
+	// Wait for shutdown signal or server error
+	select {
+	case sig := <-sigCh:
+		log.Printf("Received signal %v, initiating graceful shutdown...", sig)
+	case err := <-serverErr:
+		if err != nil {
+			log.Printf("Server error: %v", err)
+			s.Close()
+			return err
+		}
+	}
+
+	// Graceful shutdown with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	log.Println("Shutting down HTTP server...")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	log.Println("Closing database connection...")
+	if err := s.Close(); err != nil {
+		log.Printf("Database close error: %v", err)
+	}
+
+	log.Println("Shutdown complete")
+	return nil
 }
