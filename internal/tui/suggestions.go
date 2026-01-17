@@ -34,6 +34,9 @@ var commandSuggestions = []SuggestionItem{
 	{Text: "scan", Description: "Scan for AI agents", Type: "command"},
 	{Text: "agents", Description: "View connected agents", Type: "command"},
 	{Text: "agent add", Description: "Manually add an agent", Type: "command"},
+	{Text: "login", Description: "Sign in to your Neona account", Type: "command"},
+	{Text: "logout", Description: "Sign out of your account", Type: "command"},
+	{Text: "whoami", Description: "Show current user info", Type: "command"},
 }
 
 var actionSuggestions = []SuggestionItem{
