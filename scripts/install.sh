@@ -24,22 +24,27 @@ if command -v go &> /dev/null; then
     # Install directly from main repo
     go install github.com/fentz26/neona/cmd/neona@latest
     
-    # Ensure Go bin is in PATH
-    if [[ ":$PATH:" != *":$GO_BIN_DIR:"* ]]; then
-        echo -e "${BLUE}ℹ Adding $GO_BIN_DIR to PATH in ~/.bashrc${NC}"
-        echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc
-        echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.zshrc 2>/dev/null || true
-        export PATH=$PATH:$HOME/go/bin
+    # Try to make it globally available immediately via symlink
+    if [ -d "/usr/local/bin" ]; then
+        if sudo ln -sf "$GO_BIN_DIR/neona" /usr/local/bin/neona 2>/dev/null; then
+             echo -e "${GREEN}✓ Linked to /usr/local/bin/neona (available instantly)${NC}"
+        else
+             # Fallback to PATH modification if sudo fails
+             if [[ ":$PATH:" != *":$GO_BIN_DIR:"* ]]; then
+                 echo -e "${BLUE}ℹ sudo failed/unavailable. Adding $GO_BIN_DIR to PATH in ~/.bashrc${NC}"
+                 echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc
+                 echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.zshrc 2>/dev/null || true
+             fi
+        fi
     fi
 
     echo -e "${GREEN}✅ Neona installed successfully!${NC}"
     
-    # Check if we can run it
-    if command -v neona &> /dev/null; then
+    if command -v neona &> /dev/null || [ -f "/usr/local/bin/neona" ]; then
         echo -e "Run ${GREEN}neona${NC} to start."
     else
         echo -e "${BLUE}⚠️  To start using neona, restart your terminal or run:${NC}"
-        echo -e "${GREEN}  source ~/.bashrc${NC}  (or your shell config)"
+        echo -e "${GREEN}  source ~/.bashrc${NC}"
     fi
     exit 0
 fi
