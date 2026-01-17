@@ -322,16 +322,15 @@ func (a *App) View() string {
 		b.WriteString("\n")
 	}
 
-	// Suggestions dropdown (if visible)
-	if a.suggestions.IsVisible() {
-		b.WriteString("\n")
-		b.WriteString(a.suggestions.Render(a.width))
-		b.WriteString("\n")
-	}
-
 	// Input box
 	b.WriteString("\n")
 	b.WriteString(inputBoxStyle.Render(a.input.View()))
+
+	// Suggestions dropdown (if visible) - renders BELOW input
+	if a.suggestions.IsVisible() {
+		b.WriteString("\n")
+		b.WriteString(a.suggestions.Render(a.width))
+	}
 	b.WriteString("\n")
 
 	// Status bar
