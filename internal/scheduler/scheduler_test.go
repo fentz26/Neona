@@ -120,12 +120,30 @@ func TestSchedulerConcurrencyLimits(t *testing.T) {
 	sch.Start()
 	defer sch.Stop()
 	
-	// Wait for scheduler to process tasks
-	time.Sleep(2 * time.Second)
+	// Poll until workers are active or timeout
+	timeout := time.After(10 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 	
-	// Check that we don't exceed limits
-	stats := sch.GetStats()
-	activeWorkers := stats["active_workers"].(int)
+	var stats map[string]interface{}
+	var activeWorkers int
+	for {
+		select {
+		case <-timeout:
+			t.Fatalf("Timeout waiting for scheduler to dispatch tasks")
+		case <-ticker.C:
+			stats = sch.GetStats()
+			activeWorkers = stats["active_workers"].(int)
+			if activeWorkers > 0 {
+				goto hasWorkers
+			}
+		}
+	}
+hasWorkers:
+	// Give scheduler a moment to potentially exceed limits if buggy
+	time.Sleep(500 * time.Millisecond)
+	stats = sch.GetStats()
+	activeWorkers = stats["active_workers"].(int)
 	
 	if activeWorkers > cfg.GlobalMax {
 		t.Errorf("Active workers %d exceeds global max %d", activeWorkers, cfg.GlobalMax)
@@ -208,10 +226,34 @@ func TestSchedulerNoDoubleClaim(t *testing.T) {
 	
 	// Start scheduler
 	sch.Start()
+	defer sch.Stop()
 	
-	// Wait for all tasks to be claimed
-	time.Sleep(6 * time.Second)
+	// Poll until all tasks are claimed or timeout
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 	
+	for {
+		select {
+		case <-timeout:
+			t.Fatalf("Timeout waiting for all tasks to be claimed")
+		case <-ticker.C:
+			tasks, err := s.ListTasks("")
+			if err != nil {
+				t.Fatalf("Failed to list tasks: %v", err)
+			}
+			claimedCount := 0
+			for _, task := range tasks {
+				if task.Status == "claimed" {
+					claimedCount++
+				}
+			}
+			if claimedCount == numTasks {
+				goto allClaimed
+			}
+		}
+	}
+allClaimed:
 	// Verify all tasks are claimed exactly once
 	tasks, err := s.ListTasks("")
 	if err != nil {
@@ -231,9 +273,6 @@ func TestSchedulerNoDoubleClaim(t *testing.T) {
 	if claimedCount != numTasks {
 		t.Errorf("Expected %d claimed tasks, got %d", numTasks, claimedCount)
 	}
-	
-	// Stop scheduler
-	sch.Stop()
 }
 
 func newTestStore(t *testing.T) *store.Store {

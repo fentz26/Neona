@@ -40,16 +40,30 @@ func Test10ParallelWorkers(t *testing.T) {
 	
 	// Start scheduler
 	sch.Start()
+	defer sch.Stop() // Ensure scheduler stops even on test failure to prevent goroutine leaks
 	
-	// Wait for all tasks to be claimed and workers to start
-	// With 1-second polling interval, 10 tasks should be claimed within 11 seconds
-	time.Sleep(11 * time.Second)
+	// Poll until all tasks are claimed or timeout
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 	
-	// Get scheduler stats
-	stats := sch.GetStats()
-	activeWorkers := stats["active_workers"].(int)
+	var activeWorkers int
+	for {
+		select {
+		case <-timeout:
+			t.Fatalf("Timeout waiting for 10 workers to be active, got %d", activeWorkers)
+		case <-ticker.C:
+			stats := sch.GetStats()
+			activeWorkers = stats["active_workers"].(int)
+			if activeWorkers == 10 {
+				goto workersReady
+			}
+		}
+	}
+workersReady:
+	// activeWorkers already has the value from polling loop
 	
-	// Verify we have 10 active workers
+	// Verify we have 10 active workers (should be true since we only exit loop when activeWorkers == 10)
 	if activeWorkers != 10 {
 		t.Errorf("Expected 10 active workers, got %d", activeWorkers)
 	}
@@ -106,7 +120,4 @@ func Test10ParallelWorkers(t *testing.T) {
 	t.Logf("Active workers: %d", activeWorkers)
 	t.Logf("Claimed tasks: %d", claimedCount)
 	t.Logf("Unique workers: %d", len(uniqueWorkers))
-	
-	// Stop scheduler
-	sch.Stop()
 }

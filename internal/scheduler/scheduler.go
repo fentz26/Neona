@@ -147,6 +147,16 @@ func (sch *Scheduler) runWorker(task *models.Task, lease *models.Lease, workerID
 		sch.mu.Unlock()
 	}()
 	
+	// Always release the lease and task on exit to prevent permanently claimed tasks
+	defer func() {
+		if err := sch.store.DeleteLease(lease.ID); err != nil {
+			log.Printf("Error deleting lease: %v", err)
+		}
+		if err := sch.store.ReleaseTask(task.ID); err != nil {
+			log.Printf("Error releasing task: %v", err)
+		}
+	}()
+	
 	// For now, workers just hold the claim without executing
 	// In a real implementation, this would execute the task via the connector
 	log.Printf("Worker %s holding task %s (%s)", workerID, task.ID, task.Title)
@@ -154,17 +164,10 @@ func (sch *Scheduler) runWorker(task *models.Task, lease *models.Lease, workerID
 	// Simulate some work
 	select {
 	case <-sch.ctx.Done():
+		log.Printf("Worker %s interrupted, releasing task %s", workerID, task.ID)
 		return
 	case <-time.After(sch.workerDuration):
 		// Work complete
-	}
-	
-	// Release the task
-	if err := sch.store.DeleteLease(lease.ID); err != nil {
-		log.Printf("Error deleting lease: %v", err)
-	}
-	if err := sch.store.ReleaseTask(task.ID); err != nil {
-		log.Printf("Error releasing task: %v", err)
 	}
 	
 	log.Printf("Worker %s completed task %s", workerID, task.ID)

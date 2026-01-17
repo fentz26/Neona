@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/fentz26/neona/internal/audit"
 	"github.com/fentz26/neona/internal/connectors/localexec"
@@ -74,6 +76,14 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	select {
 	case <-shutdownCh:
 		log.Println("Shutting down...")
+		// Gracefully shutdown HTTP server with timeout
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("HTTP server shutdown error: %v", err)
+			return err
+		}
+		log.Println("HTTP server stopped gracefully")
 		return nil
 	case err := <-serverErr:
 		return err
