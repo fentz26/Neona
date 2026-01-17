@@ -55,7 +55,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Create service and server
 	service := controlplane.NewService(s, pdr, connector)
 	server := controlplane.NewServer(service, s, listenAddr)
-	
+
 	// Create and start scheduler
 	schedulerCfg := scheduler.DefaultConfig()
 	sched := scheduler.New(s, pdr, connector, schedulerCfg)

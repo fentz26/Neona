@@ -365,14 +365,14 @@ func (s *Store) ReleaseTask(id string) error {
 // Returns the task and lease if successful, or nil if the task is already claimed.
 func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *models.Lease, error) {
 	now := time.Now().UTC()
-	
+
 	// Start transaction for atomic claim
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	// Find and lock a pending task
 	var taskID, title, description string
 	var createdAt, updatedAt time.Time
@@ -382,14 +382,14 @@ func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *mod
 		 ORDER BY created_at ASC LIMIT 1`,
 		models.TaskStatusPending,
 	).Scan(&taskID, &title, &description, &createdAt, &updatedAt)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil, nil // No pending tasks
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("query pending task: %w", err)
 	}
-	
+
 	// Claim the task
 	res, err := tx.Exec(
 		`UPDATE tasks SET status = ?, claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ? AND status = ?`,
@@ -398,7 +398,7 @@ func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *mod
 	if err != nil {
 		return nil, nil, fmt.Errorf("claim task: %w", err)
 	}
-	
+
 	// Verify the task was actually claimed (not already claimed by another worker)
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
@@ -407,7 +407,7 @@ func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *mod
 	if rowsAffected == 0 {
 		return nil, nil, nil // Task was already claimed by another worker, return nil to indicate no task available
 	}
-	
+
 	// Create lease
 	leaseID := uuid.New().String()
 	expiresAt := now.Add(time.Duration(ttlSec) * time.Second)
@@ -418,12 +418,12 @@ func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *mod
 	if err != nil {
 		return nil, nil, fmt.Errorf("create lease: %w", err)
 	}
-	
+
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("commit transaction: %w", err)
 	}
-	
+
 	task := &models.Task{
 		ID:          taskID,
 		Title:       title,
@@ -434,7 +434,7 @@ func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *mod
 		ClaimedBy:   holderID,
 		ClaimedAt:   &now,
 	}
-	
+
 	lease := &models.Lease{
 		ID:        leaseID,
 		TaskID:    taskID,
@@ -443,7 +443,7 @@ func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *mod
 		ExpiresAt: expiresAt,
 		CreatedAt: now,
 	}
-	
+
 	return task, lease, nil
 }
 
