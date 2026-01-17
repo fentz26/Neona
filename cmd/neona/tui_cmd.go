@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/fentz26/neona/internal/tui"
@@ -58,7 +57,7 @@ func startDaemon() error {
 	// Start "neona daemon" in background
 	cmd := exec.Command(exe, "daemon")
 	// Detach process so it survives TUI exit
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureDaemonProc(cmd)
 
 	// Redirect output to avoiding writing to TUI screen, or log to file?
 	// For now, let's silence it or it might mess up the TUI.
