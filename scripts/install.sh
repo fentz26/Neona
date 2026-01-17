@@ -33,7 +33,14 @@ if command -v go &> /dev/null; then
     fi
 
     echo -e "${GREEN}✅ Neona installed successfully!${NC}"
-    echo -e "Run ${GREEN}neona${NC} to start."
+    
+    # Check if we can run it
+    if command -v neona &> /dev/null; then
+        echo -e "Run ${GREEN}neona${NC} to start."
+    else
+        echo -e "${BLUE}⚠️  To start using neona, restart your terminal or run:${NC}"
+        echo -e "${GREEN}  source ~/.bashrc${NC}  (or your shell config)"
+    fi
     exit 0
 fi
 
