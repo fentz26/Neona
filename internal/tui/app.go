@@ -150,20 +150,32 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "up", "k":
-			if a.mode == "list" && a.selectedIdx > 0 {
+			if a.suggestions.IsVisible() {
+				a.suggestions.Prev()
+			} else if a.mode == "list" && a.selectedIdx > 0 {
 				a.selectedIdx--
 			} else if a.mode == "agents" && a.agentIdx > 0 {
 				a.agentIdx--
 			}
 
 		case "down", "j":
-			if a.mode == "list" && a.selectedIdx < len(a.tasks)-1 {
+			if a.suggestions.IsVisible() {
+				a.suggestions.Next()
+			} else if a.mode == "list" && a.selectedIdx < len(a.tasks)-1 {
 				a.selectedIdx++
 			} else if a.mode == "agents" && a.agentIdx < len(a.agents)-1 {
 				a.agentIdx++
 			}
 
 		case "tab":
+			// If suggestions visible, accept selection
+			if a.suggestions.IsVisible() {
+				if selected := a.suggestions.Selected(); selected != nil {
+					a.input.SetValue(selected.Text + " ")
+					a.suggestions.Update("")
+				}
+				return a, nil
+			}
 			// Cycle through modes: list -> agents -> list
 			if a.mode == "list" {
 				a.mode = "agents"
@@ -175,6 +187,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter":
+			// If suggestions visible, accept selection
+			if a.suggestions.IsVisible() {
+				if selected := a.suggestions.Selected(); selected != nil {
+					a.input.SetValue(selected.Text + " ")
+					a.suggestions.Update("")
+				}
+				return a, nil
+			}
 			cmd := strings.TrimSpace(a.input.Value())
 			if cmd != "" {
 				a.input.SetValue("")
@@ -236,6 +256,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	a.input, cmd = a.input.Update(msg)
 	cmds = append(cmds, cmd)
 
+	// Update suggestions based on input
+	a.suggestions.Update(a.input.Value())
+
 	return a, tea.Batch(cmds...)
 }
 
@@ -281,6 +304,13 @@ func (a *App) View() string {
 		}
 		b.WriteString("\n" + msgStyle.Render(a.message))
 	} else {
+		b.WriteString("\n")
+	}
+
+	// Suggestions dropdown (if visible)
+	if a.suggestions.IsVisible() {
+		b.WriteString("\n")
+		b.WriteString(a.suggestions.Render(a.width))
 		b.WriteString("\n")
 	}
 
