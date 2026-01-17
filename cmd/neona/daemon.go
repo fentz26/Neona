@@ -55,10 +55,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	service := controlplane.NewService(s, pdr, connector)
 	server := controlplane.NewServer(service, s, listenAddr)
 
-	// Create context that cancels on shutdown signals
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// Set up signal handling for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -85,8 +81,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			s.Close()
 			return err
 		}
-	case <-ctx.Done():
-		log.Println("Context cancelled, shutting down...")
 	}
 
 	// Graceful shutdown with timeout

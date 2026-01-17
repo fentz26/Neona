@@ -8,5 +8,4 @@ var (
 	ErrNoLease        = errors.New("no active lease")
 	ErrNotOwner       = errors.New("not the lease owner")
 	ErrNotFound       = errors.New("resource not found")
-	ErrTaskNotFound   = errors.New("task not found")
 )
