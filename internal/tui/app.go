@@ -253,9 +253,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case workersFetchedMsg:
 		a.workersStats = msg.stats
 
+	case workersFetchedMsg:
+		a.workersStats = msg.stats
+		if a.mode == "workers" {
+			// Schedule the next tick only after the current fetch is complete.
+			cmds = append(cmds, a.tickCmd())
+		}
+
 	case tickMsg:
 		if a.mode == "workers" {
-			return a, tea.Batch(a.fetchWorkers(), a.tickCmd())
+			return a, a.fetchWorkers()
 		}
 
 	case commandResultMsg:
