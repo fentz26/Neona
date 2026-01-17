@@ -8,7 +8,7 @@ A CLI-centric AI Control Plane that coordinates multiple AI tools (Cursor, AntiG
 
 ```bash
 # Install Neona via one-line script
-curl -fsSL https://raw.githubusercontent.com/fentz26/Neona/master/scripts/install.sh | bash
+curl -fsSL https://neona.app/install.sh | bash
 ```
 
 Once installed, just run:
