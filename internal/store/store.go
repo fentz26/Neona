@@ -267,7 +267,7 @@ func (s *Store) ClaimTaskWithLeaseTx(taskID, holderID string, ttlSec int) (*Clai
 	var claimedBy sql.NullString
 
 	err = tx.QueryRow(
-		`SELECT id, title, description, status, claimed_by, claimed_at, created_at, updated_at 
+		`SELECT id, title, description, status, claimed_by, claimed_at, created_at, updated_at
 		 FROM tasks WHERE id = ?`,
 		taskID,
 	).Scan(&task.ID, &task.Title, &task.Description, &task.Status, &claimedBy, &claimedAt, &task.CreatedAt, &task.UpdatedAt)
@@ -359,6 +359,92 @@ func (s *Store) ReleaseTask(id string) error {
 		models.TaskStatusPending, now, id,
 	)
 	return err
+}
+
+// AtomicClaimTask atomically claims a pending task and creates a lease.
+// Returns the task and lease if successful, or nil if the task is already claimed.
+func (s *Store) AtomicClaimTask(holderID string, ttlSec int) (*models.Task, *models.Lease, error) {
+	now := time.Now().UTC()
+
+	// Start transaction for atomic claim
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Find and lock a pending task
+	var taskID, title, description string
+	var createdAt, updatedAt time.Time
+	err = tx.QueryRow(
+		`SELECT id, title, description, created_at, updated_at FROM tasks 
+		 WHERE status = ? AND claimed_by IS NULL 
+		 ORDER BY created_at ASC LIMIT 1`,
+		models.TaskStatusPending,
+	).Scan(&taskID, &title, &description, &createdAt, &updatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil, nil // No pending tasks
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("query pending task: %w", err)
+	}
+
+	// Claim the task
+	res, err := tx.Exec(
+		`UPDATE tasks SET status = ?, claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		models.TaskStatusClaimed, holderID, now, now, taskID, models.TaskStatusPending,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("claim task: %w", err)
+	}
+
+	// Verify the task was actually claimed (not already claimed by another worker)
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return nil, nil, fmt.Errorf("check rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return nil, nil, nil // Task was already claimed by another worker, return nil to indicate no task available
+	}
+
+	// Create lease
+	leaseID := uuid.New().String()
+	expiresAt := now.Add(time.Duration(ttlSec) * time.Second)
+	_, err = tx.Exec(
+		`INSERT INTO leases (id, task_id, holder_id, ttl_sec, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		leaseID, taskID, holderID, ttlSec, expiresAt, now,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create lease: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	task := &models.Task{
+		ID:          taskID,
+		Title:       title,
+		Description: description,
+		Status:      models.TaskStatusClaimed,
+		CreatedAt:   createdAt,
+		UpdatedAt:   now,
+		ClaimedBy:   holderID,
+		ClaimedAt:   &now,
+	}
+
+	lease := &models.Lease{
+		ID:        leaseID,
+		TaskID:    taskID,
+		HolderID:  holderID,
+		TTLSec:    ttlSec,
+		ExpiresAt: expiresAt,
+		CreatedAt: now,
+	}
+
+	return task, lease, nil
 }
 
 // --- Lease Operations ---
@@ -499,7 +585,7 @@ func (s *Store) GetLock(resourceID string) (*models.Lock, error) {
 	lock := &models.Lock{}
 
 	err := s.db.QueryRow(
-		`SELECT id, resource_id, holder_id, lock_type, created_at, expires_at 
+		`SELECT id, resource_id, holder_id, lock_type, created_at, expires_at
 		 FROM locks WHERE resource_id = ? AND expires_at > ?`,
 		resourceID, now,
 	).Scan(&lock.ID, &lock.ResourceID, &lock.HolderID, &lock.LockType, &lock.CreatedAt, &lock.ExpiresAt)

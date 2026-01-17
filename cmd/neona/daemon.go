@@ -13,6 +13,7 @@ import (
 	"github.com/fentz26/neona/internal/audit"
 	"github.com/fentz26/neona/internal/connectors/localexec"
 	"github.com/fentz26/neona/internal/controlplane"
+	"github.com/fentz26/neona/internal/scheduler"
 	"github.com/fentz26/neona/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -54,6 +55,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Create service and server
 	service := controlplane.NewService(s, pdr, connector)
 	server := controlplane.NewServer(service, s, listenAddr)
+
+	// Create and start scheduler
+	schedulerCfg := scheduler.DefaultConfig()
+	sched := scheduler.New(s, pdr, connector, schedulerCfg)
+	sched.Start()
+	defer sched.Stop()
 
 	// Set up signal handling for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
