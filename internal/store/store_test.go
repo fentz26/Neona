@@ -319,7 +319,9 @@ func TestClaimTaskWithLeaseTx_NotClaimableStatus(t *testing.T) {
 	task, _ := s.CreateTask("Test", "")
 
 	// Change task status to something not claimable
-	s.UpdateTaskStatus(task.ID, models.TaskStatusRunning)
+	if err := s.UpdateTaskStatus(task.ID, models.TaskStatusRunning); err != nil {
+		t.Fatalf("UpdateTaskStatus failed: %v", err)
+	}
 
 	// Claim should fail
 	_, err := s.ClaimTaskWithLeaseTx(task.ID, "holder-1", 300)

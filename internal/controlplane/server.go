@@ -89,8 +89,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	// Perform lightweight DB ping
 	if err := s.store.Ping(ctx); err != nil {
+		log.Printf("health check: database ping failed: %v", err)
 		resp.OK = false
-		resp.DB = "error: " + err.Error()
+		resp.DB = "unavailable"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(resp)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -252,7 +253,7 @@ func (c *Client) AddMemory(taskID, content string) (string, error) {
 
 // QueryMemory searches memory
 func (c *Client) QueryMemory(query string) ([]MemoryDetail, error) {
-	resp, err := c.httpClient.Get(c.baseURL + "/memory?q=" + query)
+	resp, err := c.httpClient.Get(c.baseURL + "/memory?q=" + url.QueryEscape(query))
 	if err != nil {
 		return nil, err
 	}
