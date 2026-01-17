@@ -59,6 +59,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Create and start scheduler
 	schedulerCfg := scheduler.DefaultConfig()
 	sched := scheduler.New(s, pdr, connector, schedulerCfg)
+
+	// Wire scheduler to server for /workers endpoint
+	server.SetScheduler(sched)
+
 	sched.Start()
 	defer sched.Stop()
 

@@ -15,12 +15,18 @@ import (
 // Version is set at build time or defaults to "dev".
 var Version = "dev"
 
+// SchedulerStatsProvider provides scheduler statistics for the /workers endpoint.
+type SchedulerStatsProvider interface {
+	GetStats() map[string]interface{}
+}
+
 // Server provides the HTTP API for Neona.
 type Server struct {
-	service *Service
-	store   *store.Store
-	addr    string
-	server  *http.Server
+	service   *Service
+	store     *store.Store
+	addr      string
+	server    *http.Server
+	scheduler SchedulerStatsProvider
 }
 
 // NewServer creates a new HTTP server.
@@ -30,6 +36,11 @@ func NewServer(service *Service, s *store.Store, addr string) *Server {
 		store:   s,
 		addr:    addr,
 	}
+}
+
+// SetScheduler sets the scheduler stats provider for the /workers endpoint.
+func (s *Server) SetScheduler(sched SchedulerStatsProvider) {
+	s.scheduler = sched
 }
 
 // Start starts the HTTP server.
@@ -42,6 +53,9 @@ func (s *Server) Start() error {
 
 	// Memory endpoints
 	mux.HandleFunc("/memory", s.handleMemory)
+
+	// Worker pool monitor endpoint
+	mux.HandleFunc("/workers", s.handleWorkers)
 
 	// Health check with DB ping
 	mux.HandleFunc("/health", s.handleHealth)
@@ -368,4 +382,30 @@ func (s *Server) queryMemory(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(items)
+}
+
+// --- Worker Pool Handlers ---
+
+// handleWorkers handles GET /workers
+func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.scheduler == nil {
+		// Return empty response if scheduler not configured
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active_workers":   0,
+			"global_max":       0,
+			"connector_counts": map[string]int{},
+			"workers":          []interface{}{},
+		})
+		return
+	}
+
+	stats := s.scheduler.GetStats()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }

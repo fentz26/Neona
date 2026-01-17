@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -75,7 +76,7 @@ type App struct {
 	viewport     viewport.Model
 	width        int
 	height       int
-	mode         string // "list", "detail", "agents"
+	mode         string // "list", "detail", "agents", "workers"
 	currentTask  *TaskDetail
 	runs         []RunDetail
 	memory       []MemoryDetail
@@ -87,6 +88,7 @@ type App struct {
 	agentIdx     int
 	daemonOnline bool
 	suggestions  *Suggestions
+	workersStats *WorkersStats
 }
 
 var filters = []string{"", "pending", "claimed", "running", "completed", "failed"}
@@ -143,7 +145,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 
 		case "esc":
-			if a.mode == "detail" || a.mode == "agents" {
+			if a.mode == "detail" || a.mode == "agents" || a.mode == "workers" {
 				a.mode = "list"
 				a.currentTask = nil
 				return a, a.fetchTasks()
@@ -215,6 +217,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			// Quick switch to agents view
 			a.mode = "agents"
+
+		case "w":
+			// Quick switch to workers view
+			a.mode = "workers"
+			return a, a.fetchWorkers()
 		}
 
 	case tea.WindowSizeMsg:
@@ -242,6 +249,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case daemonStatusMsg:
 		a.daemonOnline = msg.online
+
+	case workersFetchedMsg:
+		a.workersStats = msg.stats
+
+	case tickMsg:
+		if a.mode == "workers" {
+			return a, tea.Batch(a.fetchWorkers(), a.tickCmd())
+		}
 
 	case commandResultMsg:
 		a.message = msg.message
@@ -309,6 +324,8 @@ func (a *App) View() string {
 		b.WriteString(a.renderTaskDetail(contentHeight))
 	case "agents":
 		b.WriteString(a.renderAgentsPanel(contentHeight))
+	case "workers":
+		b.WriteString(a.renderWorkersPanel(contentHeight))
 	}
 
 	// Message bar
@@ -337,9 +354,15 @@ func (a *App) View() string {
 	var status string
 	switch a.mode {
 	case "list":
-		status = fmt.Sprintf(" Tasks: %d | ↑↓:nav | Tab:agents | a:agents | r:refresh | Ctrl+C:quit", len(a.tasks))
+		status = fmt.Sprintf(" Tasks: %d | ↑↓:nav | Tab:agents | a:agents | w:workers | r:refresh | Ctrl+C:quit", len(a.tasks))
 	case "agents":
 		status = fmt.Sprintf(" Agents: %d | ↑↓:nav | r:rescan | Esc:back | scan:detect", len(a.agents))
+	case "workers":
+		workerCount := 0
+		if a.workersStats != nil {
+			workerCount = a.workersStats.ActiveWorkers
+		}
+		status = fmt.Sprintf(" Workers: %d | Esc:back | w:refresh", workerCount)
 	default:
 		status = " Esc:back | Enter:command | Ctrl+C:quit"
 	}
@@ -705,4 +728,119 @@ type agentsScanMsg struct {
 
 type daemonStatusMsg struct {
 	online bool
+}
+
+type workersFetchedMsg struct {
+	stats *WorkersStats
+}
+
+type tickMsg time.Time
+
+func (a *App) fetchWorkers() tea.Cmd {
+	return func() tea.Msg {
+		stats, err := a.client.GetWorkers()
+		if err != nil {
+			return errMsg{err}
+		}
+		return workersFetchedMsg{stats}
+	}
+}
+
+func (a *App) tickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+func (a *App) renderWorkersPanel(height int) string {
+	var b strings.Builder
+
+	b.WriteString("\n  ⚙️  Worker Pool Monitor\n")
+	b.WriteString("  " + strings.Repeat("─", 50) + "\n\n")
+
+	if a.workersStats == nil {
+		b.WriteString("  Loading...\n")
+		return b.String()
+	}
+
+	stats := a.workersStats
+
+	// Summary stats
+	activeStyle := lipgloss.NewStyle().Foreground(successColor).Bold(true)
+	maxStyle := lipgloss.NewStyle().Foreground(mutedColor)
+
+	b.WriteString(fmt.Sprintf("  Active Workers: %s / %s\n\n",
+		activeStyle.Render(fmt.Sprintf("%d", stats.ActiveWorkers)),
+		maxStyle.Render(fmt.Sprintf("%d", stats.GlobalMax))))
+
+	// Connector counts
+	if len(stats.ConnectorCounts) > 0 {
+		b.WriteString("  Connector Limits:\n")
+		for name, count := range stats.ConnectorCounts {
+			b.WriteString(fmt.Sprintf("    • %s: %d\n", name, count))
+		}
+		b.WriteString("\n")
+	}
+
+	// Workers table
+	if len(stats.Workers) == 0 {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(mutedColor).Render("No active workers") + "\n")
+	} else {
+		b.WriteString("  Active Workers:\n")
+		b.WriteString("  " + strings.Repeat("─", 60) + "\n")
+
+		// Header
+		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(cyanColor)
+		b.WriteString(fmt.Sprintf("  %s  %s  %s  %s\n",
+			headerStyle.Render(fmt.Sprintf("%-8s", "WORKER")),
+			headerStyle.Render(fmt.Sprintf("%-30s", "TASK")),
+			headerStyle.Render(fmt.Sprintf("%-10s", "TTL")),
+			headerStyle.Render(fmt.Sprintf("%-10s", "CONNECTOR")),
+		))
+		b.WriteString("  " + strings.Repeat("─", 60) + "\n")
+
+		for _, w := range stats.Workers {
+			// Calculate TTL remaining
+			ttlRemaining := time.Until(w.LeaseExpires)
+			ttlStr := formatDuration(ttlRemaining)
+			ttlStyle := lipgloss.NewStyle().Foreground(successColor)
+			if ttlRemaining < 60*time.Second {
+				ttlStyle = lipgloss.NewStyle().Foreground(warningColor)
+			}
+			if ttlRemaining < 30*time.Second {
+				ttlStyle = lipgloss.NewStyle().Foreground(errorColor)
+			}
+
+			taskTitle := w.TaskTitle
+			if len(taskTitle) > 28 {
+				taskTitle = taskTitle[:25] + "..."
+			}
+
+			workerShort := w.WorkerID
+			if len(workerShort) > 8 {
+				workerShort = workerShort[:8]
+			}
+
+			b.WriteString(fmt.Sprintf("  %-8s  %-30s  %s  %-10s\n",
+				workerShort,
+				taskTitle,
+				ttlStyle.Render(fmt.Sprintf("%-10s", ttlStr)),
+				w.ConnectorName,
+			))
+		}
+	}
+
+	b.WriteString("\n  " + helpStyle.Render("Press Esc to go back, w to refresh") + "\n")
+
+	return b.String()
+}
+
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		return "EXPIRED"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
 }
