@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/fentz26/neona/internal/agents"
 )
 
 var (
@@ -21,6 +22,7 @@ var (
 	mutedColor     = lipgloss.Color("#6B7280")
 	bgColor        = lipgloss.Color("#1F2937")
 	fgColor        = lipgloss.Color("#F9FAFB")
+	cyanColor      = lipgloss.Color("#06B6D4")
 
 	// Styles
 	titleStyle = lipgloss.NewStyle().
@@ -50,25 +52,40 @@ var (
 	helpStyle = lipgloss.NewStyle().
 			Foreground(mutedColor).
 			Italic(true)
+
+	panelStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(mutedColor).
+			Padding(0, 1)
+
+	agentOnlineStyle = lipgloss.NewStyle().
+				Foreground(successColor).
+				Bold(true)
+
+	agentOfflineStyle = lipgloss.NewStyle().
+				Foreground(errorColor)
 )
 
 // App is the main TUI application model.
 type App struct {
-	client      *Client
-	tasks       []TaskItem
-	selectedIdx int
-	input       textinput.Model
-	viewport    viewport.Model
-	width       int
-	height      int
-	mode        string // "list" or "detail"
-	currentTask *TaskDetail
-	runs        []RunDetail
-	memory      []MemoryDetail
-	message     string
-	filter      string
-	filterIdx   int
-	loading     bool
+	client       *Client
+	tasks        []TaskItem
+	selectedIdx  int
+	input        textinput.Model
+	viewport     viewport.Model
+	width        int
+	height       int
+	mode         string // "list", "detail", "agents"
+	currentTask  *TaskDetail
+	runs         []RunDetail
+	memory       []MemoryDetail
+	message      string
+	filter       string
+	filterIdx    int
+	loading      bool
+	agents       []agents.Agent
+	agentIdx     int
+	daemonOnline bool
 }
 
 var filters = []string{"", "pending", "claimed", "running", "completed", "failed"}
@@ -77,18 +94,23 @@ var filterNames = []string{"ALL", "PENDING", "CLAIMED", "RUNNING", "DONE", "FAIL
 // New creates a new TUI application.
 func New(apiAddr string) *App {
 	ti := textinput.New()
-	ti.Placeholder = "Type command: add <title> | claim | run <cmd> | release | note <text> | query <term>"
+	ti.Placeholder = "Type: add <title> | claim | run <cmd> | release | scan | agents"
 	ti.Focus()
 	ti.CharLimit = 256
 	ti.Width = 80
 
 	vp := viewport.New(80, 20)
 
+	// Detect agents on startup
+	detector := agents.NewDetector()
+	detectedAgents := detector.Scan()
+
 	return &App{
 		client:   NewClient(apiAddr),
 		input:    ti,
 		viewport: vp,
 		mode:     "list",
+		agents:   detectedAgents,
 	}
 }
 
@@ -104,6 +126,7 @@ func (a *App) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
 		a.fetchTasks(),
+		a.checkDaemon(),
 	)
 }
 
@@ -118,7 +141,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 
 		case "esc":
-			if a.mode == "detail" {
+			if a.mode == "detail" || a.mode == "agents" {
 				a.mode = "list"
 				a.currentTask = nil
 				return a, a.fetchTasks()
@@ -127,17 +150,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if a.mode == "list" && a.selectedIdx > 0 {
 				a.selectedIdx--
+			} else if a.mode == "agents" && a.agentIdx > 0 {
+				a.agentIdx--
 			}
 
 		case "down", "j":
 			if a.mode == "list" && a.selectedIdx < len(a.tasks)-1 {
 				a.selectedIdx++
+			} else if a.mode == "agents" && a.agentIdx < len(a.agents)-1 {
+				a.agentIdx++
 			}
 
 		case "tab":
-			a.filterIdx = (a.filterIdx + 1) % len(filters)
-			a.filter = filters[a.filterIdx]
-			return a, a.fetchTasks()
+			// Cycle through modes: list -> agents -> list
+			if a.mode == "list" {
+				a.mode = "agents"
+			} else {
+				a.mode = "list"
+				a.filterIdx = (a.filterIdx + 1) % len(filters)
+				a.filter = filters[a.filterIdx]
+				return a, a.fetchTasks()
+			}
 
 		case "enter":
 			cmd := strings.TrimSpace(a.input.Value())
@@ -145,7 +178,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.input.SetValue("")
 				return a, a.executeCommand(cmd)
 			} else if a.mode == "list" && len(a.tasks) > 0 {
-				// Enter task detail
 				task := a.tasks[a.selectedIdx]
 				a.mode = "detail"
 				return a, a.fetchTaskDetail(task.ID)
@@ -154,7 +186,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if a.mode == "list" {
 				return a, a.fetchTasks()
+			} else if a.mode == "agents" {
+				return a, a.scanAgents()
 			}
+
+		case "a":
+			// Quick switch to agents view
+			a.mode = "agents"
 		}
 
 	case tea.WindowSizeMsg:
@@ -176,6 +214,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.runs = msg.runs
 		a.memory = msg.memory
 
+	case agentsScanMsg:
+		a.agents = msg.agents
+		a.message = fmt.Sprintf("✓ Found %d agents", len(a.agents))
+
+	case daemonStatusMsg:
+		a.daemonOnline = msg.online
+
 	case commandResultMsg:
 		a.message = msg.message
 		return a, a.fetchTasks()
@@ -196,10 +241,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) View() string {
 	var b strings.Builder
 
-	// Header
+	// Header with daemon status
+	daemonStatus := agentOnlineStyle.Render("● DAEMON")
+	if !a.daemonOnline {
+		daemonStatus = agentOfflineStyle.Render("○ DAEMON")
+	}
+
 	header := titleStyle.Render("🚀 NEONA Control Plane")
-	filterLabel := fmt.Sprintf(" [%s]", filterNames[a.filterIdx])
-	header += lipgloss.NewStyle().Foreground(mutedColor).Render(filterLabel)
+	header += "  " + daemonStatus
+	header += "  " + lipgloss.NewStyle().Foreground(cyanColor).Render(fmt.Sprintf("[%d agents]", len(a.agents)))
+
 	b.WriteString(header + "\n")
 	b.WriteString(strings.Repeat("─", a.width) + "\n")
 
@@ -209,10 +260,15 @@ func (a *App) View() string {
 		contentHeight = 5
 	}
 
-	if a.mode == "list" {
-		b.WriteString(a.renderTaskList(contentHeight))
-	} else {
+	switch a.mode {
+	case "list":
+		filterLabel := fmt.Sprintf(" Filter: [%s]", filterNames[a.filterIdx])
+		b.WriteString(lipgloss.NewStyle().Foreground(mutedColor).Render(filterLabel) + "\n")
+		b.WriteString(a.renderTaskList(contentHeight - 1))
+	case "detail":
 		b.WriteString(a.renderTaskDetail(contentHeight))
+	case "agents":
+		b.WriteString(a.renderAgentsPanel(contentHeight))
 	}
 
 	// Message bar
@@ -233,9 +289,12 @@ func (a *App) View() string {
 
 	// Status bar
 	var status string
-	if a.mode == "list" {
-		status = fmt.Sprintf(" Tasks: %d | ↑↓:nav | Tab:filter | Enter:select | r:refresh | Ctrl+C:quit", len(a.tasks))
-	} else {
+	switch a.mode {
+	case "list":
+		status = fmt.Sprintf(" Tasks: %d | ↑↓:nav | Tab:agents | a:agents | r:refresh | Ctrl+C:quit", len(a.tasks))
+	case "agents":
+		status = fmt.Sprintf(" Agents: %d | ↑↓:nav | r:rescan | Esc:back | scan:detect", len(a.agents))
+	default:
 		status = " Esc:back | Enter:command | Ctrl+C:quit"
 	}
 	b.WriteString(statusBarStyle.Width(a.width).Render(status))
@@ -254,14 +313,14 @@ func (a *App) renderTaskList(height int) string {
 	var lines []string
 	for i, task := range a.tasks {
 		status := a.formatStatus(task.Status)
-		line := fmt.Sprintf("%s  %s", status, task.TaskTitle)
 
 		if i == a.selectedIdx {
-			line = selectedStyle.Render(fmt.Sprintf("▶ %s  %s", a.formatStatusPlain(task.Status), task.TaskTitle))
+			line := selectedStyle.Render(fmt.Sprintf("▶ %s  %s", a.formatStatusPlain(task.Status), task.TaskTitle))
+			lines = append(lines, line)
 		} else {
-			line = taskItemStyle.Render(fmt.Sprintf("  %s  %s", status, task.TaskTitle))
+			line := taskItemStyle.Render(fmt.Sprintf("  %s  %s", status, task.TaskTitle))
+			lines = append(lines, line)
 		}
-		lines = append(lines, line)
 	}
 
 	// Limit visible lines
@@ -279,6 +338,52 @@ func (a *App) renderTaskList(height int) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func (a *App) renderAgentsPanel(height int) string {
+	var b strings.Builder
+
+	b.WriteString("\n  🤖 Connected Agents\n")
+	b.WriteString("  " + strings.Repeat("─", 40) + "\n\n")
+
+	if len(a.agents) == 0 {
+		b.WriteString("  No agents detected.\n")
+		b.WriteString("  Type: scan to detect installed AI tools\n")
+		b.WriteString("  Type: agent add <name> <type> to add manually\n")
+		return b.String()
+	}
+
+	for i, agent := range a.agents {
+		statusIcon := agentOnlineStyle.Render("●")
+		if agent.Status != "online" {
+			statusIcon = agentOfflineStyle.Render("○")
+		}
+
+		name := agent.Name
+		typeLabel := lipgloss.NewStyle().Foreground(mutedColor).Render(fmt.Sprintf("(%s)", agent.Type))
+
+		var line string
+		if i == a.agentIdx {
+			line = selectedStyle.Render(fmt.Sprintf("▶ %s %s %s", statusIcon, name, typeLabel))
+		} else {
+			line = fmt.Sprintf("    %s %s %s", statusIcon, name, typeLabel)
+		}
+		b.WriteString(line + "\n")
+
+		// Show path for selected agent
+		if i == a.agentIdx && agent.Path != "" {
+			pathLine := lipgloss.NewStyle().Foreground(mutedColor).Render(fmt.Sprintf("      Path: %s", agent.Path))
+			b.WriteString(pathLine + "\n")
+		}
+		if i == a.agentIdx && agent.Version != "" {
+			verLine := lipgloss.NewStyle().Foreground(mutedColor).Render(fmt.Sprintf("      Version: %s", agent.Version))
+			b.WriteString(verLine + "\n")
+		}
+	}
+
+	b.WriteString("\n  " + helpStyle.Render("Commands: scan | agent add <name> <type>") + "\n")
+
+	return b.String()
 }
 
 func (a *App) renderTaskDetail(height int) string {
@@ -387,6 +492,21 @@ func (a *App) fetchTaskDetail(taskID string) tea.Cmd {
 	}
 }
 
+func (a *App) scanAgents() tea.Cmd {
+	return func() tea.Msg {
+		detector := agents.NewDetector()
+		found := detector.Scan()
+		return agentsScanMsg{found}
+	}
+}
+
+func (a *App) checkDaemon() tea.Cmd {
+	return func() tea.Msg {
+		_, err := a.client.ListTasks("")
+		return daemonStatusMsg{online: err == nil}
+	}
+}
+
 func (a *App) executeCommand(input string) tea.Cmd {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
@@ -470,11 +590,40 @@ func (a *App) executeCommand(input string) tea.Cmd {
 			}
 			return commandResultMsg{fmt.Sprintf("Found %d items", len(items))}
 
+		case "scan":
+			detector := agents.NewDetector()
+			found := detector.Scan()
+			a.agents = found
+			return commandResultMsg{fmt.Sprintf("✓ Detected %d agents", len(found))}
+
+		case "agents":
+			a.mode = "agents"
+			return commandResultMsg{fmt.Sprintf("%d agents connected", len(a.agents))}
+
+		case "agent":
+			if len(args) < 2 {
+				return commandResultMsg{"Usage: agent add <name> <type>"}
+			}
+			if args[0] == "add" && len(args) >= 3 {
+				name := args[1]
+				agentType := args[2]
+				newAgent := agents.Agent{
+					ID:           fmt.Sprintf("custom-%s", name),
+					Name:         name,
+					Type:         agentType,
+					Status:       "unknown",
+					AutoDetected: false,
+				}
+				a.agents = append(a.agents, newAgent)
+				return commandResultMsg{fmt.Sprintf("✓ Added agent: %s", name)}
+			}
+			return commandResultMsg{"Usage: agent add <name> <type>"}
+
 		case "q", "quit", "exit":
 			return tea.Quit
 
 		default:
-			return commandResultMsg{fmt.Sprintf("Unknown: %s (try: add, claim, run, release, note, query)", cmd)}
+			return commandResultMsg{fmt.Sprintf("Unknown: %s (try: add, claim, run, scan, agents)", cmd)}
 		}
 	}
 }
@@ -502,4 +651,12 @@ type taskDetailLoadedMsg struct {
 	task   *TaskDetail
 	runs   []RunDetail
 	memory []MemoryDetail
+}
+
+type agentsScanMsg struct {
+	agents []agents.Agent
+}
+
+type daemonStatusMsg struct {
+	online bool
 }
