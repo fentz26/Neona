@@ -7,20 +7,28 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
+
+// DefaultClientTimeout is the default timeout for API requests.
+const DefaultClientTimeout = 10 * time.Second
 
 // Client wraps HTTP calls to the Neona API
 type Client struct {
-	baseURL  string
-	holderID string
+	baseURL    string
+	holderID   string
+	httpClient *http.Client
 }
 
-// NewClient creates a new API client
+// NewClient creates a new API client with timeout
 func NewClient(baseURL string) *Client {
 	hostname, _ := os.Hostname()
 	return &Client{
 		baseURL:  baseURL,
 		holderID: fmt.Sprintf("tui@%s", hostname),
+		httpClient: &http.Client{
+			Timeout: DefaultClientTimeout,
+		},
 	}
 }
 
@@ -31,7 +39,7 @@ func (c *Client) ListTasks(status string) ([]TaskItem, error) {
 		url += "?status=" + status
 	}
 
-	resp, err := http.Get(url)
+	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +74,7 @@ func (c *Client) ListTasks(status string) ([]TaskItem, error) {
 
 // GetTask fetches a single task
 func (c *Client) GetTask(id string) (*TaskDetail, error) {
-	resp, err := http.Get(c.baseURL + "/tasks/" + id)
+	resp, err := c.httpClient.Get(c.baseURL + "/tasks/" + id)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +111,7 @@ func (c *Client) GetTask(id string) (*TaskDetail, error) {
 
 // GetTaskLogs fetches run logs for a task
 func (c *Client) GetTaskLogs(taskID string) ([]RunDetail, error) {
-	resp, err := http.Get(c.baseURL + "/tasks/" + taskID + "/logs")
+	resp, err := c.httpClient.Get(c.baseURL + "/tasks/" + taskID + "/logs")
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +143,7 @@ func (c *Client) GetTaskLogs(taskID string) ([]RunDetail, error) {
 
 // GetTaskMemory fetches memory items for a task
 func (c *Client) GetTaskMemory(taskID string) ([]MemoryDetail, error) {
-	resp, err := http.Get(c.baseURL + "/tasks/" + taskID + "/memory")
+	resp, err := c.httpClient.Get(c.baseURL + "/tasks/" + taskID + "/memory")
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +252,7 @@ func (c *Client) AddMemory(taskID, content string) (string, error) {
 
 // QueryMemory searches memory
 func (c *Client) QueryMemory(query string) ([]MemoryDetail, error) {
-	resp, err := http.Get(c.baseURL + "/memory?q=" + query)
+	resp, err := c.httpClient.Get(c.baseURL + "/memory?q=" + query)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +284,7 @@ func (c *Client) post(path string, data interface{}) ([]byte, error) {
 		return nil, err
 	}
 
-	resp, err := http.Post(c.baseURL+path, "application/json", bytes.NewReader(jsonData))
+	resp, err := c.httpClient.Post(c.baseURL+path, "application/json", bytes.NewReader(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -292,4 +300,26 @@ func (c *Client) post(path string, data interface{}) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+// CheckHealth checks if the daemon is healthy
+func (c *Client) CheckHealth() (bool, error) {
+	resp, err := c.httpClient.Get(c.baseURL + "/health")
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, nil
+	}
+
+	var health struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return false, err
+	}
+
+	return health.OK, nil
 }

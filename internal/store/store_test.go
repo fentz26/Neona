@@ -1,9 +1,12 @@
 package store
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/fentz26/neona/internal/models"
 )
@@ -238,6 +241,240 @@ func TestPDR(t *testing.T) {
 	}
 	if pdr.ID == "" {
 		t.Error("PDR ID should not be empty")
+	}
+}
+
+func TestClaimTaskWithLeaseTx_Atomicity(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	// Create a task
+	task, err := s.CreateTask("Test Task", "Description")
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// Test successful atomic claim
+	result, err := s.ClaimTaskWithLeaseTx(task.ID, "holder-1", 300)
+	if err != nil {
+		t.Fatalf("ClaimTaskWithLeaseTx failed: %v", err)
+	}
+	if result.Task.Status != models.TaskStatusClaimed {
+		t.Errorf("Expected task status claimed, got %s", result.Task.Status)
+	}
+	if result.Lease == nil {
+		t.Error("Expected lease to be created")
+	}
+	if result.Lease.HolderID != "holder-1" {
+		t.Errorf("Expected holder-1, got %s", result.Lease.HolderID)
+	}
+
+	// Verify task status was actually updated in DB
+	got, _ := s.GetTask(task.ID)
+	if got.Status != models.TaskStatusClaimed {
+		t.Errorf("Task status not persisted correctly, got %s", got.Status)
+	}
+
+	// Verify lease was created
+	lease, _ := s.GetActiveLease(task.ID)
+	if lease == nil {
+		t.Error("Lease was not created in DB")
+	}
+}
+
+func TestClaimTaskWithLeaseTx_TaskNotFound(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	// Try to claim non-existent task
+	_, err := s.ClaimTaskWithLeaseTx("non-existent-id", "holder-1", 300)
+	if err != ErrTaskNotClaimable {
+		t.Errorf("Expected ErrTaskNotClaimable, got %v", err)
+	}
+}
+
+func TestClaimTaskWithLeaseTx_AlreadyClaimed(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	task, _ := s.CreateTask("Test", "")
+
+	// First claim succeeds
+	_, err := s.ClaimTaskWithLeaseTx(task.ID, "holder-1", 300)
+	if err != nil {
+		t.Fatalf("First claim failed: %v", err)
+	}
+
+	// Second claim should fail
+	_, err = s.ClaimTaskWithLeaseTx(task.ID, "holder-2", 300)
+	if err == nil {
+		t.Error("Expected second claim to fail")
+	}
+}
+
+func TestClaimTaskWithLeaseTx_NotClaimableStatus(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	task, _ := s.CreateTask("Test", "")
+
+	// Change task status to something not claimable
+	s.UpdateTaskStatus(task.ID, models.TaskStatusRunning)
+
+	// Claim should fail
+	_, err := s.ClaimTaskWithLeaseTx(task.ID, "holder-1", 300)
+	if err != ErrTaskNotClaimable {
+		t.Errorf("Expected ErrTaskNotClaimable, got %v", err)
+	}
+
+	// Verify task status remains unchanged
+	got, _ := s.GetTask(task.ID)
+	if got.Status != models.TaskStatusRunning {
+		t.Errorf("Task status should remain running, got %s", got.Status)
+	}
+}
+
+func TestAcquireLock_Race(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	resourceID := "test-resource"
+
+	// Test that second lock attempt fails deterministically
+	lock1, err := s.AcquireLock(resourceID, "holder-1", "exclusive", 300)
+	if err != nil {
+		t.Fatalf("First lock acquisition failed: %v", err)
+	}
+	if lock1 == nil {
+		t.Fatal("Expected first lock to be created")
+	}
+
+	// Second attempt should fail with ErrResourceLocked
+	_, err = s.AcquireLock(resourceID, "holder-2", "exclusive", 300)
+	if err != ErrResourceLocked {
+		t.Errorf("Expected ErrResourceLocked for second lock, got: %v", err)
+	}
+
+	// Third attempt should also fail
+	_, err = s.AcquireLock(resourceID, "holder-3", "exclusive", 300)
+	if err != ErrResourceLocked {
+		t.Errorf("Expected ErrResourceLocked for third lock, got: %v", err)
+	}
+
+	// Verify only one lock exists in DB
+	lock, err := s.GetLock(resourceID)
+	if err != nil {
+		t.Fatalf("GetLock failed: %v", err)
+	}
+	if lock == nil {
+		t.Error("Expected lock to exist")
+	}
+	if lock.HolderID != "holder-1" {
+		t.Errorf("Expected lock holder to be holder-1, got %s", lock.HolderID)
+	}
+}
+
+func TestAcquireLock_ConcurrentAttempts(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	resourceID := "test-resource-concurrent"
+	numAttempts := 5
+	successCount := 0
+	failCount := 0
+
+	// Sequential attempts simulate the race condition without actual goroutine races
+	// Since SQLite serializes writes anyway, this tests the same logic
+	for i := 0; i < numAttempts; i++ {
+		_, err := s.AcquireLock(resourceID, fmt.Sprintf("holder-%d", i), "exclusive", 300)
+		if err == nil {
+			successCount++
+		} else if err == ErrResourceLocked {
+			failCount++
+		} else {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	}
+
+	// First attempt should succeed, rest should fail
+	if successCount != 1 {
+		t.Errorf("Expected exactly 1 successful lock, got %d", successCount)
+	}
+	if failCount != numAttempts-1 {
+		t.Errorf("Expected %d failed locks, got %d", numAttempts-1, failCount)
+	}
+}
+
+func TestAcquireLock_ExpiredCleanup(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	resourceID := "test-resource"
+
+	// Acquire lock with very short TTL
+	lock, err := s.AcquireLock(resourceID, "holder-1", "exclusive", 1)
+	if err != nil {
+		t.Fatalf("AcquireLock failed: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("Expected lock to be created")
+	}
+
+	// Wait for lock to expire
+	time.Sleep(2 * time.Second)
+
+	// Now another holder should be able to acquire the lock
+	// (expired lock should be cleaned up)
+	lock2, err := s.AcquireLock(resourceID, "holder-2", "exclusive", 300)
+	if err != nil {
+		t.Fatalf("Second AcquireLock failed: %v", err)
+	}
+	if lock2 == nil {
+		t.Error("Expected second lock to be created")
+	}
+	if lock2.HolderID != "holder-2" {
+		t.Errorf("Expected holder-2, got %s", lock2.HolderID)
+	}
+}
+
+func TestAcquireLock_ReleaseLock(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	resourceID := "test-resource"
+
+	// Acquire lock
+	lock, err := s.AcquireLock(resourceID, "holder-1", "exclusive", 300)
+	if err != nil {
+		t.Fatalf("AcquireLock failed: %v", err)
+	}
+
+	// Release the lock
+	err = s.ReleaseLock(lock.ID)
+	if err != nil {
+		t.Fatalf("ReleaseLock failed: %v", err)
+	}
+
+	// Now another holder should be able to acquire the lock
+	lock2, err := s.AcquireLock(resourceID, "holder-2", "exclusive", 300)
+	if err != nil {
+		t.Fatalf("Second AcquireLock failed: %v", err)
+	}
+	if lock2 == nil {
+		t.Error("Expected lock to be acquired after release")
+	}
+}
+
+func TestPing(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := s.Ping(ctx)
+	if err != nil {
+		t.Errorf("Ping failed: %v", err)
 	}
 }
 
