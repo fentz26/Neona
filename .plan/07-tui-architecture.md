@@ -438,8 +438,9 @@ As users type commands, the TUI provides autocomplete suggestions:
 - Type `/` to see all available commands
 - Type `/task` to see task-related commands
 - Type `/agent` to see agent-related commands
-- Type `@` to see available plugins and agents
-- Type `@plugin-` to see plugin-specific commands
+- Type `@` to see available agents/sub-agents
+- Type `!` to see available plugins
+- Type `!plugin-` to see plugin-specific commands
 - Use `Tab` to complete commands and see argument options
 
 #### Autocomplete Examples
@@ -447,40 +448,57 @@ As users type commands, the TUI provides autocomplete suggestions:
 ```
 User types: "@"
 Autocomplete shows:
-  @github-plugin
-  @debug-plugin
   @claude-001
   @letta-agent
+  @sub-agent-1
 
-User types: "@github-"
+User types: "!"
 Autocomplete shows:
-  @github-plugin
+  !github-plugin
+  !debug-plugin
+  !workflow-plugin
 
-User types: "@github-plugin /"
+User types: "!github-"
+Autocomplete shows:
+  !github-plugin
+
+User types: "!github-plugin /"
 Autocomplete shows plugin commands:
-  @github-plugin /pr
-  @github-plugin /repo
-  @github-plugin /issue
+  !github-plugin /pr
+  !github-plugin /repo
+  !github-plugin /issue
 ```
 
-### At-Sign Tagging (`@`)
+### Tagging System
 
-Users can tag plugins, agents, or other entities using `@` prefix:
+#### At-Sign Tagging (`@`) - For Agents/Sub-Agents
+
+Users can tag agents or sub-agents using `@` prefix:
 
 ```
-@plugin-name <command>      # Execute plugin command
 @agent-name <message>       # Send message to specific agent
-@plugin-name /config        # Plugin-specific configuration
+@sub-agent-name <command>   # Execute command on sub-agent
 @agent-name /task create    # Create task assigned to agent
+```
+
+#### Exclamation Mark Tagging (`!`) - For Plugins
+
+Users can tag plugins using `!` prefix:
+
+```
+!plugin-name <command>      # Execute plugin command
+!plugin-name /config        # Plugin-specific configuration
+!plugin-name /command args  # Execute plugin command with args
 ```
 
 #### Examples
 
 ```
-@github-plugin /pr list     # Use github-plugin to list PRs
+!github-plugin /pr list     # Use github-plugin to list PRs
 @claude-001 Create a task to review PR #123
-@debug-plugin /debug logs # Use debug-plugin for logs
-@github-plugin /pr create   # Create PR using github-plugin
+!debug-plugin /debug logs   # Use debug-plugin for logs
+!github-plugin /pr create   # Create PR using github-plugin
+@letta-agent /task claim task-001  # Assign task to agent
 ```
 
 #### Tag Resolution
@@ -493,49 +511,62 @@ type TagParser struct {
 }
 
 func (p *TagParser) Parse(input string) (*TaggedInput, error) {
-    // Check for @ tag
-    if !strings.HasPrefix(input, "@") {
-        return &TaggedInput{Type: "normal", Content: input}, nil
+    // Check for ! tag (plugins)
+    if strings.HasPrefix(input, "!") {
+        parts := strings.SplitN(input, " ", 2)
+        tag := strings.TrimPrefix(parts[0], "!")
+        content := ""
+        if len(parts) > 1 {
+            content = parts[1]
+        }
+        
+        // Resolve plugin
+        if plugin, ok := p.plugins[tag]; ok {
+            return &TaggedInput{
+                Type: "plugin",
+                Target: tag,
+                Plugin: plugin,
+                Content: content,
+            }, nil
+        }
+        
+        return nil, fmt.Errorf("unknown plugin: !%s", tag)
     }
     
-    // Extract tag and content
-    parts := strings.SplitN(input, " ", 2)
-    tag := strings.TrimPrefix(parts[0], "@")
-    content := ""
-    if len(parts) > 1 {
-        content = parts[1]
+    // Check for @ tag (agents/sub-agents)
+    if strings.HasPrefix(input, "@") {
+        parts := strings.SplitN(input, " ", 2)
+        tag := strings.TrimPrefix(parts[0], "@")
+        content := ""
+        if len(parts) > 1 {
+            content = parts[1]
+        }
+        
+        // Resolve agent
+        if agent, ok := p.agents[tag]; ok {
+            return &TaggedInput{
+                Type: "agent",
+                Target: tag,
+                Agent: agent,
+                Content: content,
+            }, nil
+        }
+        
+        return nil, fmt.Errorf("unknown agent: @%s", tag)
     }
     
-    // Resolve tag
-    if plugin, ok := p.plugins[tag]; ok {
-        return &TaggedInput{
-            Type: "plugin",
-            Target: tag,
-            Plugin: plugin,
-            Content: content,
-        }, nil
-    }
-    
-    if agent, ok := p.agents[tag]; ok {
-        return &TaggedInput{
-            Type: "agent",
-            Target: tag,
-            Agent: agent,
-            Content: content,
-        }, nil
-    }
-    
-    return nil, fmt.Errorf("unknown tag: @%s", tag)
+    // No tag, treat as normal input
+    return &TaggedInput{Type: "normal", Content: input}, nil
 }
 ```
 
 #### Tagged Command Flow
 
 ```
-User Input: "@github-plugin /pr list"
+User Input: "!github-plugin /pr list"
     │
     ▼
-Tag Parser (extract "@github-plugin")
+Tag Parser (extract "!github-plugin")
     │
     ▼
 Plugin Registry (resolve "github-plugin")
@@ -553,6 +584,33 @@ Plugin.Execute("/pr", ["list"])
 Result Displayed in TUI
 ```
 
+#### Agent Tagged Command Flow
+
+```
+User Input: "@claude-001 Create a task to review PR #123"
+    │
+    ▼
+Tag Parser (extract "@claude-001")
+    │
+    ▼
+Agent Registry (resolve "claude-001")
+    │
+    ▼
+Message Parser (parse message content)
+    │
+    ▼
+Agent Command Handler
+    │
+    ▼
+Agent.SendMessage("Create a task to review PR #123")
+    │
+    ▼
+Agent processes and creates task
+    │
+    ▼
+Result Displayed in TUI
+```
+
 ### Command Router
 
 Commands are parsed and routed to appropriate handlers:
@@ -565,7 +623,7 @@ type CommandRouter struct {
 }
 
 func (r *CommandRouter) Route(input string) error {
-    // Check for @ tag first
+    // Check for ! or @ tag first
     tagged, err := r.tagParser.Parse(input)
     if err != nil {
         return err
@@ -883,8 +941,8 @@ internal/
 ### Workflow 4: Using Plugin Commands
 
 ```
-1. User types: "@github-plugin /pr list"
-2. Tag parser extracts "@github-plugin"
+1. User types: "!github-plugin /pr list"
+2. Tag parser extracts "!github-plugin"
 3. Plugin registry resolves "github-plugin"
 4. Command parser extracts "/pr list"
 5. Plugin's PR handler executes
@@ -905,8 +963,8 @@ internal/
 ### Workflow 6: Plugin Command Execution
 
 ```
-1. User types: "@debug-plugin /logs show"
-2. Tag parser identifies "debug-plugin"
+1. User types: "!debug-plugin /logs show"
+2. Tag parser identifies "!debug-plugin"
 3. Plugin command handler routes to plugin
 4. Plugin executes "/logs show" command
 5. Debug logs displayed in TUI
