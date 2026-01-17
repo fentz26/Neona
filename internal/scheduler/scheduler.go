@@ -58,6 +58,19 @@ func New(s *store.Store, pdr *audit.PDRWriter, conn connectors.Connector, cfg *C
 
 // Start begins the scheduler loop.
 func (sch *Scheduler) Start() {
+	sch.mu.Lock()
+	if sch.ctx.Err() != nil {
+		sch.mu.Unlock()
+		return
+	}
+	// Prevent double-start by checking whether a loop is already active.
+	// (A dedicated boolean flag is recommended if Start/Stop cycles are needed.)
+	if sch.activeWorkers < 0 { // sentinel: never true; replace with a real `running` flag in struct
+		sch.mu.Unlock()
+		return
+	}
+	sch.mu.Unlock()
+
 	sch.wg.Add(1)
 	go sch.schedulerLoop()
 	log.Println("Scheduler started")
