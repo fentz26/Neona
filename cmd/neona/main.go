@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fentz26/neona/internal/update"
 	"github.com/spf13/cobra"
 )
 
@@ -11,6 +12,22 @@ var rootCmd = &cobra.Command{
 	Use:   "neona",
 	Short: "Neona - AI Control Plane CLI",
 	Long:  `Neona is a CLI-centric AI Control Plane that coordinates multiple AI tools under shared rules, knowledge, and policy.`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Skip update check for certain commands
+		skipCommands := map[string]bool{
+			"update":    true,
+			"version":   true,
+			"uninstall": true,
+			"help":      true,
+		}
+
+		if skipCommands[cmd.Name()] {
+			return
+		}
+
+		// Check for updates (non-blocking)
+		update.CheckAndNotify()
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Default to running TUI
 		return runTUI(cmd, args)

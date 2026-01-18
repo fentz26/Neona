@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fentz26/neona/internal/agents"
+	"github.com/fentz26/neona/internal/auth"
 )
 
 var (
@@ -89,6 +91,8 @@ type App struct {
 	daemonOnline bool
 	suggestions  *Suggestions
 	workersStats *WorkersStats
+	authManager  *auth.Manager
+	currentUser  *auth.User
 }
 
 var filters = []string{"", "pending", "claimed", "running", "completed", "failed"}
@@ -97,7 +101,7 @@ var filterNames = []string{"ALL", "PENDING", "CLAIMED", "RUNNING", "DONE", "FAIL
 // New creates a new TUI application.
 func New(apiAddr string) *App {
 	ti := textinput.New()
-	ti.Placeholder = "Type: add <title> | claim | run <cmd> | release | scan | agents"
+	ti.Placeholder = "Type: add <title> | claim | run <cmd> | release | scan | login"
 	ti.Focus()
 	ti.CharLimit = 256
 	ti.Width = 80
@@ -108,6 +112,13 @@ func New(apiAddr string) *App {
 	detector := agents.NewDetector()
 	detectedAgents := detector.Scan()
 
+	// Initialize auth manager
+	authMgr, _ := auth.NewManager()
+	var currentUser *auth.User
+	if authMgr != nil && authMgr.IsAuthenticated() {
+		currentUser = authMgr.GetUser()
+	}
+
 	return &App{
 		client:      NewClient(apiAddr),
 		input:       ti,
@@ -115,6 +126,8 @@ func New(apiAddr string) *App {
 		mode:        "list",
 		agents:      detectedAgents,
 		suggestions: NewSuggestions(),
+		authManager: authMgr,
+		currentUser: currentUser,
 	}
 }
 
@@ -309,9 +322,16 @@ func (a *App) View() string {
 		daemonStatus = agentOfflineStyle.Render("○ DAEMON")
 	}
 
+	// User status
+	userStatus := lipgloss.NewStyle().Foreground(mutedColor).Render("○ not signed in")
+	if a.currentUser != nil {
+		userStatus = lipgloss.NewStyle().Foreground(successColor).Render(fmt.Sprintf("● %s", a.currentUser.Username))
+	}
+
 	header := titleStyle.Render("🚀 NEONA Control Plane")
 	header += "  " + daemonStatus
 	header += "  " + lipgloss.NewStyle().Foreground(cyanColor).Render(fmt.Sprintf("[%d agents]", len(a.agents)))
+	header += "  " + userStatus
 
 	b.WriteString(header + "\n")
 	b.WriteString(strings.Repeat("─", a.width) + "\n")
@@ -698,8 +718,46 @@ func (a *App) executeCommand(input string) tea.Cmd {
 		case "q", "quit", "exit":
 			return tea.Quit
 
+		case "login":
+			// Trigger browser-based login
+			if a.authManager == nil {
+				return commandResultMsg{"Error: Auth not initialized"}
+			}
+			if a.currentUser != nil {
+				return commandResultMsg{fmt.Sprintf("Already signed in as %s", a.currentUser.Username)}
+			}
+			// Perform login in background
+			go func() {
+				ctx := context.Background()
+				session, err := a.authManager.Login(ctx)
+				if err == nil && session != nil {
+					a.currentUser = &session.User
+				}
+			}()
+			return commandResultMsg{"Opening browser for login... Check your browser."}
+
+		case "logout":
+			if a.authManager == nil {
+				return commandResultMsg{"Error: Auth not initialized"}
+			}
+			if a.currentUser == nil {
+				return commandResultMsg{"Not signed in"}
+			}
+			username := a.currentUser.Username
+			if err := a.authManager.Logout(); err != nil {
+				return commandResultMsg{"Error: " + err.Error()}
+			}
+			a.currentUser = nil
+			return commandResultMsg{fmt.Sprintf("✓ Signed out from %s", username)}
+
+		case "whoami":
+			if a.currentUser == nil {
+				return commandResultMsg{"Not signed in. Use 'login' to authenticate."}
+			}
+			return commandResultMsg{fmt.Sprintf("Signed in as %s (%s)", a.currentUser.Username, a.currentUser.Email)}
+
 		default:
-			return commandResultMsg{fmt.Sprintf("Unknown: %s (try: add, claim, run, scan, agents)", cmd)}
+			return commandResultMsg{fmt.Sprintf("Unknown: %s (try: add, claim, run, scan, login)", cmd)}
 		}
 	}
 }

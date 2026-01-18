@@ -1,5 +1,7 @@
 # Neona
 
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/fentz26/Neona)](https://github.com/fentz26/Neona/releases)
+
 A CLI-centric AI Control Plane that coordinates multiple AI tools (Cursor, AntiGravity, Zencoder, Claude CLI) to execute multi-step tasks under shared rules, knowledge, and policy.
 
 ## Quick Start
@@ -25,7 +27,7 @@ That's it! Neona's TUI will launch, automatically starting the background daemon
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                        neona CLI                            │
 │      daemon | task | memory | tui                           │
@@ -133,7 +135,7 @@ The LocalExec connector only permits safe commands:
 
 ## Project Structure
 
-```
+```text
 neona/
 ├── cmd/neona/           # CLI entry points
 │   ├── main.go          # Cobra root command
