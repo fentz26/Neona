@@ -1,10 +1,16 @@
 package main
 
+/*
+#cgo CFLAGS: -O3 -mavx2 -msse4.2
+#include "c/memory/prepare.c"
+*/
+import "C"
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"unsafe"
 
 	"github.com/spf13/cobra"
 )
@@ -76,30 +82,51 @@ func runMemoryQuery(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var items []map[string]interface{}
-	if err := json.Unmarshal(resp, &items); err != nil {
-		return err
-	}
-
-	if len(items) == 0 {
+	if len(resp) == 0 {
 		fmt.Println("No memory items found")
 		return nil
 	}
 
+	// 1. Initialize storage with estimated capacity
+	capacity := uint32(len(resp)/60) + 64 
+	store := C.memory_store_init(C.uint32_t(capacity))
+	defer C.memory_store_free(store)
+
+	// 2. SIMD-accelerated zero-copy JSON parsing
+	C.memory_store_parse_json(store, (*C.char)(unsafe.Pointer(&resp[0])), C.uint32_t(len(resp)))
+
+	realCount := uint32(C.memory_get_count(store))
+	if realCount == 0 {
+		fmt.Println("No memory items found")
+		return nil
+	}
+
+	// 3. Optional: Lookup table-based search for priority match
+	if memQuery != "" {
+		cQ := C.CString(memQuery)
+		idx := C.memory_store_find(store, cQ, C.uint32_t(len(memQuery)))
+		C.free(unsafe.Pointer(cQ))
+		if idx != -1 {
+			fmt.Printf("Search result match found at index %d\n\n", idx)
+		}
+	}
+
+	// 4. Output results in table format
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tTASK\tCONTENT\tTAGS")
-	for _, item := range items {
-		id := truncateID(item["id"].(string))
-		taskID := ""
-		if tid, ok := item["task_id"].(string); ok {
-			taskID = truncateID(tid)
-		}
-		content := truncate(item["content"].(string), 50)
-		tags := ""
-		if t, ok := item["tags"].(string); ok {
-			tags = t
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", id, taskID, content, tags)
+	
+	for i := uint32(0); i < realCount; i++ {
+		// Leverage the Arena pointers directly
+		id := C.GoString(C.memory_get_id(store, C.uint32_t(i)))
+		tid := C.GoString(C.memory_get_task_id(store, C.uint32_t(i)))
+		cont := C.GoString(C.memory_get_content(store, C.uint32_t(i)))
+		tags := C.GoString(C.memory_get_tags(store, C.uint32_t(i)))
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", 
+			truncateID(id), 
+			truncateID(tid), 
+			truncate(cont, 50), 
+			tags)
 	}
 	w.Flush()
 	return nil
