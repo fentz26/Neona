@@ -15,23 +15,35 @@ import (
 	"github.com/google/uuid"
 )
 
+// WorkerInfo contains details about an active worker.
+type WorkerInfo struct {
+	WorkerID      string    `json:"worker_id"`
+	TaskID        string    `json:"task_id"`
+	TaskTitle     string    `json:"task_title"`
+	LeaseID       string    `json:"lease_id"`
+	LeaseExpires  time.Time `json:"lease_expires"`
+	StartedAt     time.Time `json:"started_at"`
+	ConnectorName string    `json:"connector_name"`
+}
+
 // Scheduler manages task dispatching and worker pools.
 type Scheduler struct {
 	store     *store.Store
 	pdr       *audit.PDRWriter
 	connector connectors.Connector
 	config    *Config
-	
+
 	// Worker pool state
 	mu              sync.Mutex
 	activeWorkers   int
 	connectorCounts map[string]int
-	
+	workers         map[string]*WorkerInfo // Track per-worker details
+
 	// Control
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-	
+
 	// Test configuration
 	workerDuration time.Duration
 }
@@ -41,15 +53,16 @@ func New(s *store.Store, pdr *audit.PDRWriter, conn connectors.Connector, cfg *C
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	return &Scheduler{
 		store:           s,
 		pdr:             pdr,
 		connector:       conn,
 		config:          cfg,
 		connectorCounts: make(map[string]int),
+		workers:         make(map[string]*WorkerInfo),
 		ctx:             ctx,
 		cancel:          cancel,
 		workerDuration:  5 * time.Second, // Default duration
@@ -86,10 +99,10 @@ func (sch *Scheduler) Stop() {
 // schedulerLoop polls for pending tasks and dispatches them to workers.
 func (sch *Scheduler) schedulerLoop() {
 	defer sch.wg.Done()
-	
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-sch.ctx.Done():
@@ -108,7 +121,7 @@ func (sch *Scheduler) pollAndDispatch() {
 		sch.mu.Unlock()
 		return
 	}
-	
+
 	connectorName := sch.connector.Name()
 	connectorLimit := sch.config.GetConnectorLimit(connectorName)
 	if sch.connectorCounts[connectorName] >= connectorLimit {
@@ -116,7 +129,7 @@ func (sch *Scheduler) pollAndDispatch() {
 		return
 	}
 	sch.mu.Unlock()
-	
+
 	// Attempt to atomically claim a task
 	workerID := uuid.New().String()
 	task, lease, err := sch.store.AtomicClaimTask(workerID, 300)
@@ -128,22 +141,31 @@ func (sch *Scheduler) pollAndDispatch() {
 		// No pending tasks
 		return
 	}
-	
+
 	// Emit PDR for dispatch
 	sch.pdr.Record("task.dispatch", map[string]interface{}{
 		"task_id":   task.ID,
 		"worker_id": workerID,
 		"connector": connectorName,
 	}, "success", task.ID, fmt.Sprintf("Dispatched to worker %s", workerID))
-	
+
 	log.Printf("Dispatched task %s (%s) to worker %s", task.ID, task.Title, workerID)
-	
-	// Increment worker counts
+
+	// Increment worker counts and store worker info
 	sch.mu.Lock()
 	sch.activeWorkers++
 	sch.connectorCounts[connectorName]++
+	sch.workers[workerID] = &WorkerInfo{
+		WorkerID:      workerID,
+		TaskID:        task.ID,
+		TaskTitle:     task.Title,
+		LeaseID:       lease.ID,
+		LeaseExpires:  lease.ExpiresAt,
+		StartedAt:     time.Now(),
+		ConnectorName: connectorName,
+	}
 	sch.mu.Unlock()
-	
+
 	// Start worker in goroutine
 	sch.wg.Add(1)
 	go sch.runWorker(task, lease, workerID)
@@ -153,13 +175,14 @@ func (sch *Scheduler) pollAndDispatch() {
 func (sch *Scheduler) runWorker(task *models.Task, lease *models.Lease, workerID string) {
 	defer sch.wg.Done()
 	defer func() {
-		// Decrement worker counts
+		// Decrement worker counts and remove from tracking
 		sch.mu.Lock()
 		sch.activeWorkers--
 		sch.connectorCounts[sch.connector.Name()]--
+		delete(sch.workers, workerID)
 		sch.mu.Unlock()
 	}()
-	
+
 	// If we exit early (cancel/error), make the task claimable again.
 	released := false
 	defer func() {
@@ -189,7 +212,7 @@ func (sch *Scheduler) runWorker(task *models.Task, lease *models.Lease, workerID
 		released = true
 		return
 	}
-	
+
 	log.Printf("Worker %s completed task %s", workerID, task.ID)
 }
 
@@ -197,15 +220,38 @@ func (sch *Scheduler) runWorker(task *models.Task, lease *models.Lease, workerID
 func (sch *Scheduler) GetStats() map[string]interface{} {
 	sch.mu.Lock()
 	defer sch.mu.Unlock()
-	
+
 	connectorCounts := make(map[string]int)
 	for k, v := range sch.connectorCounts {
 		connectorCounts[k] = v
 	}
-	
+
+	// Copy workers list (deep copy to prevent external mutation and data races).
+	// The caller will encode this to JSON after the lock is released.
+	workers := make([]*WorkerInfo, 0, len(sch.workers))
+	for _, w := range sch.workers {
+		wCopy := *w
+		workers = append(workers, &wCopy)
+	}
+
 	return map[string]interface{}{
 		"active_workers":   sch.activeWorkers,
 		"global_max":       sch.config.GlobalMax,
 		"connector_counts": connectorCounts,
+		"workers":          workers,
 	}
+}
+
+// GetWorkers returns a snapshot of all active workers.
+func (sch *Scheduler) GetWorkers() []*WorkerInfo {
+	sch.mu.Lock()
+	defer sch.mu.Unlock()
+
+	workers := make([]*WorkerInfo, 0, len(sch.workers))
+	for _, w := range sch.workers {
+		// Make a copy to avoid data races
+		wCopy := *w
+		workers = append(workers, &wCopy)
+	}
+	return workers
 }

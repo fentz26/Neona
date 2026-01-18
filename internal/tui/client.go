@@ -324,3 +324,24 @@ func (c *Client) CheckHealth() (bool, error) {
 
 	return health.OK, nil
 }
+
+// GetWorkers fetches worker pool statistics from the daemon
+func (c *Client) GetWorkers() (*WorkersStats, error) {
+	resp, err := c.httpClient.Get(c.baseURL + "/workers")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error: %s", string(body))
+	}
+
+	var stats WorkersStats
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, err
+	}
+
+	return &stats, nil
+}
