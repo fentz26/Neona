@@ -44,6 +44,12 @@ detect_platform() {
             ;;
     esac
     
+    # Set binary extension for Windows
+    BINARY_EXT=""
+    if [ "$OS" = "windows" ]; then
+        BINARY_EXT=".exe"
+    fi
+    
     echo -e "${BLUE}ℹ Detected platform: ${OS}/${ARCH}${NC}"
 }
 
@@ -52,8 +58,14 @@ get_latest_version() {
     LATEST_VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     
     if [ -z "$LATEST_VERSION" ]; then
-        echo -e "${YELLOW}⚠ Could not fetch latest version. Trying 'latest' tag...${NC}"
-        LATEST_VERSION="latest"
+        echo -e "${YELLOW}⚠ Could not fetch latest version. Trying to find any release...${NC}"
+        # Fallback: get latest pre-release
+        LATEST_VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    fi
+    
+    if [ -z "$LATEST_VERSION" ]; then
+        echo -e "${RED}✗ No releases found.${NC}"
+        return 1
     fi
     
     echo -e "${BLUE}ℹ Latest version: ${LATEST_VERSION}${NC}"
@@ -62,39 +74,48 @@ get_latest_version() {
 # Download and install pre-built binary
 install_from_release() {
     detect_platform
-    get_latest_version
     
-    DOWNLOAD_URL="https://github.com/$REPO/releases/download/${LATEST_VERSION}/neona_${OS}_${ARCH}.tar.gz"
+    if ! get_latest_version; then
+        echo -e "${RED}✗ No releases available. Please install Go and try again.${NC}"
+        echo -e "${YELLOW}Install Go from: https://go.dev/dl/${NC}"
+        exit 1
+    fi
     
-    echo -e "${BLUE}⬇ Downloading from: ${DOWNLOAD_URL}${NC}"
+    # Asset naming: neona-{os}-{arch} (matches CI output)
+    ASSET_NAME="neona-${OS}-${ARCH}${BINARY_EXT}"
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/${LATEST_VERSION}/${ASSET_NAME}"
+    
+    echo -e "${BLUE}⬇ Downloading: ${ASSET_NAME}${NC}"
+    echo -e "${BLUE}  From: ${DOWNLOAD_URL}${NC}"
     
     # Create temporary directory
     TMP_DIR=$(mktemp -d)
     trap "rm -rf $TMP_DIR" EXIT
     
-    # Download and extract
-    if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/neona.tar.gz"; then
-        echo -e "${RED}✗ Failed to download binary. Release may not exist yet.${NC}"
-        echo -e "${YELLOW}Please install Go from https://go.dev/dl/ and try again.${NC}"
-        echo -e "${YELLOW}Or check releases at: https://github.com/$REPO/releases${NC}"
+    # Download binary
+    if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$BINARY_NAME$BINARY_EXT"; then
+        echo -e "${RED}✗ Failed to download binary.${NC}"
+        echo -e "${YELLOW}Asset '${ASSET_NAME}' may not exist for this platform.${NC}"
+        echo -e "${YELLOW}Check releases at: https://github.com/$REPO/releases${NC}"
+        echo -e "${YELLOW}Or install Go from https://go.dev/dl/ and try again.${NC}"
         exit 1
     fi
     
-    tar -xzf "$TMP_DIR/neona.tar.gz" -C "$TMP_DIR"
+    # Make executable
+    chmod +x "$TMP_DIR/$BINARY_NAME$BINARY_EXT"
     
     # Install binary
     if [ -w "$INSTALL_DIR" ]; then
-        mv "$TMP_DIR/$BINARY_NAME" "$INSTALL_DIR/"
-        chmod +x "$INSTALL_DIR/$BINARY_NAME"
+        mv "$TMP_DIR/$BINARY_NAME$BINARY_EXT" "$INSTALL_DIR/$BINARY_NAME"
     elif command -v sudo &> /dev/null; then
         echo -e "${YELLOW}⚠ Requesting sudo to install to $INSTALL_DIR${NC}"
-        sudo mv "$TMP_DIR/$BINARY_NAME" "$INSTALL_DIR/"
+        sudo mv "$TMP_DIR/$BINARY_NAME$BINARY_EXT" "$INSTALL_DIR/$BINARY_NAME"
         sudo chmod +x "$INSTALL_DIR/$BINARY_NAME"
     else
         # Fallback to user's local bin
         LOCAL_BIN="$HOME/.local/bin"
         mkdir -p "$LOCAL_BIN"
-        mv "$TMP_DIR/$BINARY_NAME" "$LOCAL_BIN/"
+        mv "$TMP_DIR/$BINARY_NAME$BINARY_EXT" "$LOCAL_BIN/$BINARY_NAME"
         chmod +x "$LOCAL_BIN/$BINARY_NAME"
         
         if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
@@ -106,7 +127,7 @@ install_from_release() {
         INSTALL_DIR="$LOCAL_BIN"
     fi
     
-    echo -e "${GREEN}✅ Neona installed successfully to $INSTALL_DIR/$BINARY_NAME${NC}"
+    echo -e "${GREEN}✅ Neona ${LATEST_VERSION} installed to $INSTALL_DIR/$BINARY_NAME${NC}"
 }
 
 # Install via Go (preferred if Go is available)
@@ -139,7 +160,7 @@ main() {
     if command -v go &> /dev/null; then
         install_from_go
     else
-        echo -e "${YELLOW}ℹ Go not found. Attempting to download pre-built binary...${NC}"
+        echo -e "${YELLOW}ℹ Go not found. Downloading pre-built binary...${NC}"
         install_from_release
     fi
     
