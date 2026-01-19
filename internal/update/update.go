@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -173,7 +174,7 @@ func (c *Checker) DownloadAndInstall() error {
 	}
 
 	// Download to temp file
-	fmt.Printf("Downloading from %s...\n", downloadURL)
+	// Download to temp file
 
 	resp, err := http.Get(downloadURL)
 	if err != nil {
@@ -211,7 +212,7 @@ func (c *Checker) DownloadAndInstall() error {
 	currentBin, _ = filepath.EvalSymlinks(currentBin)
 
 	// Replace the binary
-	fmt.Println("Installing update...")
+	// Replace the binary
 
 	// On some systems, we can't replace a running binary directly
 	// Use a temporary rename approach
@@ -331,44 +332,105 @@ func copyFile(src, dst string) error {
 	return os.Chmod(dst, info.Mode())
 }
 
-// CheckAndNotify checks for updates and prints a notification if available.
-// This is designed to be called at startup without blocking.
-func CheckAndNotify() {
+// CheckAndAutoUpdate checks for updates and installs if available.
+// Returns true if updated (caller should restart).
+func CheckAndAutoUpdate() (bool, error) {
 	checker, err := NewChecker()
 	if err != nil {
-		return // Silently fail
+		return false, err
 	}
 
 	if !checker.ShouldCheck() {
-		// Check if we have a cached update notification
-		if cachedVersion, ok := checker.GetCachedVersion(); ok {
-			currentVersion := strings.TrimPrefix(Version, "v")
-			if cachedVersion != currentVersion && currentVersion != "dev" {
-				printUpdateNotification(cachedVersion)
-			}
-		}
-		return
+		return false, nil
 	}
 
-	// Perform check in background to not block startup
+	s := newSpinner("Checking for update...")
+	s.Start()
+
+	// Ensure stopped if we return early
+	defer func() {
+		if s != nil {
+			s.Stop()
+		}
+	}()
+
+	hasUpdate, latestVersion, err := checker.CheckForUpdate()
+	if err != nil {
+		return false, err
+	}
+
+	if !hasUpdate {
+		return false, nil
+	}
+
+	s.UpdateMessage(fmt.Sprintf("Found new update: %s", latestVersion))
+	time.Sleep(1 * time.Second)
+
+	s.UpdateMessage("Updating...")
+	if err := checker.DownloadAndInstall(); err != nil {
+		// Stop spinner to print error clearly
+		s.Stop()
+		s = nil // Prevent defer from stopping again
+		fmt.Printf("\rUpdate failed: %v\n", err)
+		return false, err
+	}
+
+	s.UpdateMessage("Done")
+	time.Sleep(500 * time.Millisecond)
+
+	// Stop spinner before returning
+	s.Stop()
+	s = nil
+
+	return true, nil
+}
+
+// Spinner implementation
+type spinner struct {
+	frames []string
+	delay  time.Duration
+	stop   chan struct{}
+	msg    string
+	mu     sync.Mutex
+}
+
+func newSpinner(msg string) *spinner {
+	return &spinner{
+		frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		delay:  100 * time.Millisecond,
+		stop:   make(chan struct{}),
+		msg:    msg,
+	}
+}
+
+func (s *spinner) Start() {
 	go func() {
-		hasUpdate, latestVersion, err := checker.CheckForUpdate()
-		if err == nil && hasUpdate {
-			printUpdateNotification(latestVersion)
+		for {
+			for _, f := range s.frames {
+				select {
+				case <-s.stop:
+					return
+				default:
+					s.mu.Lock()
+					msg := s.msg
+					s.mu.Unlock()
+					fmt.Printf("\r%s %s\033[K", f, msg)
+					time.Sleep(s.delay)
+				}
+			}
 		}
 	}()
 }
 
-// printUpdateNotification prints the update notification message.
-func printUpdateNotification(latestVersion string) {
-	fmt.Println()
-	fmt.Println("┌──────────────────────────────────────────────────┐")
-	fmt.Println("│  🎉 A new version of Neona is available!        │")
-	fmt.Printf("│     Current: %-10s  Latest: %-10s     │\n", Version, latestVersion)
-	fmt.Println("│                                                  │")
-	fmt.Println("│  Run 'neona update' to update                   │")
-	fmt.Println("└──────────────────────────────────────────────────┘")
-	fmt.Println()
+func (s *spinner) Stop() {
+	close(s.stop)
+	fmt.Printf("\r\033[K") // Clear line
+}
+
+func (s *spinner) UpdateMessage(msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.msg = msg
 }
 
 // RunSelfUpdate performs the self-update process.

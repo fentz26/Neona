@@ -25,8 +25,14 @@ var rootCmd = &cobra.Command{
 			return
 		}
 
-		// Check for updates (non-blocking)
-		update.CheckAndNotify()
+		// Check for updates (blocking with spinner)
+		updated, err := update.CheckAndAutoUpdate()
+		if err == nil && updated {
+			if err := restartSelf(); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to restart: %v\n", err)
+				os.Exit(1)
+			}
+		}
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Default to running TUI
