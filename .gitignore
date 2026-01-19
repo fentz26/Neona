@@ -56,3 +56,17 @@ internal/audit/traces/
 
 # DO NOT COMMIT folder (reference repositories)
 ..DO NOT COMMIT/
+
+# Python (neona-tui)
+neona-tui/.venv/
+neona-tui/__pycache__/
+neona-tui/*.egg-info/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+.eggs/
+*.whl

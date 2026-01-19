@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neona-tui"
+version = "0.0.1"
+description = "Python TUI for Neona - Rich and beautiful terminal interface"
+authors = [
+    { name = "Fentzzz", email = "fentz26@users.noreply.github.com" }
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "textual>=0.47.0",
+    "rich>=13.7.0",
+    "httpx>=0.26.0",
+]
+
+[project.scripts]
+neona-tui = "neona_tui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/fentz26/neona"
+Repository = "https://github.com/fentz26/neona"

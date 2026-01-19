@@ -28,8 +28,6 @@ neona
 
 That's it! Neona's TUI will launch, automatically starting the background daemon if needed.
 
-> **Note:** Neona requires `go` to be installed on your system.
-
 ## 🏗️ Architecture
 
 ```text
