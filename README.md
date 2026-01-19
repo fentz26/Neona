@@ -15,7 +15,7 @@ Created by **Fentzzz (fentz26)**.
 
 ```bash
 # Install Neona via one-line script
-curl -fsSL https://neona.app/install.sh | bash
+curl -fsSL https://cli.neona.app/install.sh | bash
 ```
 
 ### Usage
