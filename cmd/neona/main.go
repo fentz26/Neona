@@ -46,6 +46,7 @@ func init() {
 	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(memoryCmd)
 	rootCmd.AddCommand(tuiCmd)
+	rootCmd.AddCommand(mcpCmd)
 }
 
 func main() {
