@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -271,5 +273,88 @@ func TestConfig_Validate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRegistry_ReturnsDeepCopies(t *testing.T) {
+	reg := NewRegistry()
+	err := reg.Register(MCPServer{
+		Name:       "copy-test",
+		Tools:      []Tool{{Name: "t1", Description: "d1"}},
+		ToolCount:  1,
+		Categories: []string{"cat1"},
+		Priority:   50,
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	got1, ok := reg.Get("copy-test")
+	if !ok {
+		t.Fatal("Get() should find registered server")
+	}
+	got1.Tools[0].Name = "mutated"
+	got1.Categories[0] = "mutated-cat"
+
+	got2, ok := reg.Get("copy-test")
+	if !ok {
+		t.Fatal("Get() should find registered server")
+	}
+	if got2.Tools[0].Name != "t1" {
+		t.Fatalf("expected Tools[0].Name to remain %q, got %q", "t1", got2.Tools[0].Name)
+	}
+	if got2.Categories[0] != "cat1" {
+		t.Fatalf("expected Categories[0] to remain %q, got %q", "cat1", got2.Categories[0])
+	}
+
+	list := reg.List()
+	if len(list) != 1 {
+		t.Fatalf("expected List() to return 1 server, got %d", len(list))
+	}
+	list[0].Tools[0].Name = "mutated2"
+	got3, _ := reg.Get("copy-test")
+	if got3.Tools[0].Name != "t1" {
+		t.Fatalf("expected registry not to be affected by List() mutations, got %q", got3.Tools[0].Name)
+	}
+}
+
+func TestConfig_SaveLoadRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "mcp.yaml")
+
+	cfg := DefaultConfig()
+	cfg.MaxToolsPerTask = 42
+	cfg.AlwaysOff = append(cfg.AlwaysOff, "github")
+
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	// Ensure file exists and is not empty.
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if st.Size() == 0 {
+		t.Fatal("saved config file is empty")
+	}
+
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if loaded.MaxToolsPerTask != 42 {
+		t.Fatalf("expected MaxToolsPerTask=42, got %d", loaded.MaxToolsPerTask)
+	}
+	found := false
+	for _, n := range loaded.AlwaysOff {
+		if n == "github" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected github to be present in AlwaysOff after reload")
 	}
 }

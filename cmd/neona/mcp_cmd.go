@@ -69,7 +69,34 @@ func getMCPRouter() (*mcp.KeywordRouter, error) {
 	reg := mcp.NewRegistry()
 	reg.RegisterDefaults()
 
+	// Apply config enable/disable preferences to registry for consistent behavior.
+	for _, name := range cfg.AlwaysOff {
+		_ = reg.Disable(name)
+	}
+	for _, name := range cfg.AlwaysOn {
+		_ = reg.Enable(name)
+	}
+
 	return mcp.NewRouter(cfg, reg), nil
+}
+
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(xs []string, s string) []string {
+	out := xs[:0]
+	for _, x := range xs {
+		if x != s {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func runMCPList(cmd *cobra.Command, args []string) error {
@@ -109,6 +136,13 @@ func runMCPEnable(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Persist enable by removing from always_off.
+	cfg := router.GetConfig()
+	cfg.AlwaysOff = removeString(cfg.AlwaysOff, name)
+	if err := mcp.SaveConfigToHome(cfg); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
 	fmt.Printf("✓ Enabled MCP server: %s\n", name)
 	return nil
 }
@@ -122,6 +156,16 @@ func runMCPDisable(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	if err := router.GetRegistry().Disable(name); err != nil {
 		return err
+	}
+
+	// Persist disable by adding to always_off (and ensuring always_on doesn't conflict).
+	cfg := router.GetConfig()
+	cfg.AlwaysOn = removeString(cfg.AlwaysOn, name)
+	if !containsString(cfg.AlwaysOff, name) {
+		cfg.AlwaysOff = append(cfg.AlwaysOff, name)
+	}
+	if err := mcp.SaveConfigToHome(cfg); err != nil {
+		return fmt.Errorf("saving config: %w", err)
 	}
 
 	fmt.Printf("✗ Disabled MCP server: %s\n", name)

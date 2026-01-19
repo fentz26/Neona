@@ -6,6 +6,17 @@ import (
 	"sync"
 )
 
+func cloneServer(s *MCPServer) MCPServer {
+	c := *s
+	if s.Tools != nil {
+		c.Tools = append([]Tool(nil), s.Tools...)
+	}
+	if s.Categories != nil {
+		c.Categories = append([]string(nil), s.Categories...)
+	}
+	return c
+}
+
 // Registry manages registered MCP servers.
 type Registry struct {
 	servers map[string]*MCPServer
@@ -47,8 +58,8 @@ func (r *Registry) Get(name string) (*MCPServer, bool) {
 		return nil, false
 	}
 
-	// Return a copy to prevent external mutation
-	copy := *server
+	// Return a deep copy to prevent external mutation
+	copy := cloneServer(server)
 	return &copy, true
 }
 
@@ -59,7 +70,7 @@ func (r *Registry) List() []MCPServer {
 
 	servers := make([]MCPServer, 0, len(r.servers))
 	for _, s := range r.servers {
-		servers = append(servers, *s)
+		servers = append(servers, cloneServer(s))
 	}
 
 	// Sort by priority descending
@@ -113,7 +124,7 @@ func (r *Registry) GetEnabled() []MCPServer {
 	servers := make([]MCPServer, 0)
 	for _, s := range r.servers {
 		if s.Enabled {
-			servers = append(servers, *s)
+			servers = append(servers, cloneServer(s))
 		}
 	}
 

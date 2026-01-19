@@ -115,6 +115,40 @@ func LoadConfigFromHome() (*Config, error) {
 	return LoadConfig(path)
 }
 
+// SaveConfig saves configuration to a YAML file, creating parent directories if needed.
+func SaveConfig(path string, cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config cannot be nil")
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing config file: %w", err)
+	}
+	return nil
+}
+
+// SaveConfigToHome saves configuration to ~/.neona/mcp.yaml.
+func SaveConfigToHome(cfg *Config) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("getting home dir: %w", err)
+	}
+	path := filepath.Join(home, ".neona", "mcp.yaml")
+	return SaveConfig(path, cfg)
+}
+
 // Validate checks that the configuration is valid.
 func (c *Config) Validate() error {
 	if c.MaxToolsPerTask < 1 {
