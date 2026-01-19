@@ -2,7 +2,7 @@
 set -e
 
 # Neona Installer
-# Usage: curl -fsSL https://neona.app/install.sh | bash
+# Usage: curl -fsSL https://cli.neona.app/install.sh | bash
 
 REPO="Neona-AI/Neona"
 BINARY_NAME="neona"
