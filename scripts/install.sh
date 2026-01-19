@@ -10,34 +10,30 @@ INSTALL_DIR="/usr/local/bin"
 GO_BIN_DIR="$HOME/go/bin"
 
 # Colors
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-CYAN='\033[0;96m'  # Light blue/cyan for banner
-YELLOW='\033[0;33m'
-RED='\033[0;31m'
+BANNER_COLOR='\033[38;2;189;224;254m'  # #bde0fe light blue
 NC='\033[0m' # No Color
 
-# Logging functions with prefixes
+# Logging functions with plain text prefixes (no color)
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo "[INFO] $1"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo "[SUCCESS] $1"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    echo "[WARNING] $1"
 }
 
 log_error() {
-    echo -e "${RED}[FAILED]${NC} $1"
+    echo "[FAILED] $1"
 }
 
 # ASCII Banner
 show_banner() {
     echo ""
-    echo -e "${CYAN}"
+    echo -e "${BANNER_COLOR}"
     cat << 'EOF'
  _  _  ____  _____  _  _    __   
 ( \( )( ___)(  _  )( \( )  /__\  
@@ -170,8 +166,8 @@ install_from_release() {
 install_from_go() {
     log_success "Go detected. Installing via 'go install'..."
     
-    # Install directly from main repo
-    go install github.com/$REPO/cmd/neona@latest
+    # Install directly from main repo (use fentz26/neona as declared in go.mod)
+    go install github.com/fentz26/neona/cmd/neona@latest
     
     # Try to make it globally available immediately via symlink
     if [ -d "/usr/local/bin" ]; then
