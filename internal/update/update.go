@@ -16,7 +16,7 @@ import (
 
 const (
 	// GitHubRepo is the repository to check for updates.
-	GitHubRepo = "fentz26/Neona"
+	GitHubRepo = "Neona-AI/Neona"
 	// GitHubAPIURL is the GitHub releases API endpoint.
 	GitHubAPIURL = "https://api.github.com/repos/%s/releases/latest"
 	// CheckInterval is the minimum time between update checks.
