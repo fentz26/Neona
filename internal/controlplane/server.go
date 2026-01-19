@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fentz26/neona/internal/mcp"
 	"github.com/fentz26/neona/internal/models"
 	"github.com/fentz26/neona/internal/store"
 )
@@ -20,6 +21,11 @@ type SchedulerStatsProvider interface {
 	GetStats() map[string]interface{}
 }
 
+// MCPRouter provides MCP routing for the /mcp/route endpoint.
+type MCPRouter interface {
+	Route(ctx context.Context, task mcp.Task) (*mcp.RoutingResult, error)
+}
+
 // Server provides the HTTP API for Neona.
 type Server struct {
 	service   *Service
@@ -27,6 +33,7 @@ type Server struct {
 	addr      string
 	server    *http.Server
 	scheduler SchedulerStatsProvider
+	mcpRouter MCPRouter
 }
 
 // NewServer creates a new HTTP server.
@@ -44,6 +51,12 @@ func (s *Server) SetScheduler(sched SchedulerStatsProvider) {
 	s.scheduler = sched
 }
 
+// SetMCPRouter sets the MCP router for the /mcp/route endpoint.
+// Must be called before Start() - not safe for concurrent use.
+func (s *Server) SetMCPRouter(router MCPRouter) {
+	s.mcpRouter = router
+}
+
 // Start starts the HTTP server.
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
@@ -57,6 +70,9 @@ func (s *Server) Start() error {
 
 	// Worker pool monitor endpoint
 	mux.HandleFunc("/workers", s.handleWorkers)
+
+	// MCP routing endpoint
+	mux.HandleFunc("/mcp/route", s.handleMCPRoute)
 
 	// Health check with DB ping
 	mux.HandleFunc("/health", s.handleHealth)
@@ -409,4 +425,79 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	stats := s.scheduler.GetStats()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// --- MCP Route Handlers ---
+
+// mcpRouteRequest represents the request body for /mcp/route
+type mcpRouteRequest struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+// mcpRouteResponse represents the response for /mcp/route
+type mcpRouteResponse struct {
+	SelectedMCPs []mcpServerInfo `json:"selected_mcps"`
+	MatchedRules []string        `json:"matched_rules"`
+	TotalTools   int             `json:"total_tools"`
+	ToolBudget   int             `json:"tool_budget"`
+}
+
+type mcpServerInfo struct {
+	Name      string `json:"name"`
+	ToolCount int    `json:"tool_count"`
+}
+
+// handleMCPRoute handles POST /mcp/route
+func (s *Server) handleMCPRoute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.mcpRouter == nil {
+		http.Error(w, "MCP router not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req mcpRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	if req.Title == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+
+	task := mcp.Task{
+		Title:       req.Title,
+		Description: req.Description,
+	}
+
+	result, err := s.mcpRouter.Route(r.Context(), task)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	mcps := make([]mcpServerInfo, len(result.SelectedMCPs))
+	for i, m := range result.SelectedMCPs {
+		mcps[i] = mcpServerInfo{
+			Name:      m.Name,
+			ToolCount: m.ToolCount,
+		}
+	}
+
+	resp := mcpRouteResponse{
+		SelectedMCPs: mcps,
+		MatchedRules: result.MatchedRules,
+		TotalTools:   result.TotalTools,
+		ToolBudget:   80, // Default budget
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

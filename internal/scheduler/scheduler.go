@@ -10,6 +10,7 @@ import (
 
 	"github.com/fentz26/neona/internal/audit"
 	"github.com/fentz26/neona/internal/connectors"
+	"github.com/fentz26/neona/internal/mcp"
 	"github.com/fentz26/neona/internal/models"
 	"github.com/fentz26/neona/internal/store"
 	"github.com/google/uuid"
@@ -32,6 +33,9 @@ type Scheduler struct {
 	pdr       *audit.PDRWriter
 	connector connectors.Connector
 	config    *Config
+
+	// MCP router for tool selection
+	mcpRouter *mcp.KeywordRouter
 
 	// Worker pool state
 	mu              sync.Mutex
@@ -67,6 +71,12 @@ func New(s *store.Store, pdr *audit.PDRWriter, conn connectors.Connector, cfg *C
 		cancel:          cancel,
 		workerDuration:  5 * time.Second, // Default duration
 	}
+}
+
+// SetMCPRouter sets the MCP router for tool selection.
+// Must be called before Start() - not safe for concurrent use.
+func (sch *Scheduler) SetMCPRouter(router *mcp.KeywordRouter) {
+	sch.mcpRouter = router
 }
 
 // Start begins the scheduler loop.
@@ -148,6 +158,32 @@ func (sch *Scheduler) pollAndDispatch() {
 		"worker_id": workerID,
 		"connector": connectorName,
 	}, "success", task.ID, fmt.Sprintf("Dispatched to worker %s", workerID))
+
+	// Route MCPs for this task if router is configured
+	if sch.mcpRouter != nil {
+		mcpTask := mcp.Task{
+			ID:          task.ID,
+			Title:       task.Title,
+			Description: task.Description,
+		}
+		result, err := sch.mcpRouter.Route(sch.ctx, mcpTask)
+		if err != nil {
+			log.Printf("MCP routing error for task %s: %v", task.ID, err)
+		} else {
+			// Log selected MCPs
+			mcpNames := make([]string, len(result.SelectedMCPs))
+			for i, m := range result.SelectedMCPs {
+				mcpNames[i] = m.Name
+			}
+			sch.pdr.Record("task.mcp_route", map[string]interface{}{
+				"task_id":       task.ID,
+				"selected_mcps": mcpNames,
+				"total_tools":   result.TotalTools,
+				"matched_rules": result.MatchedRules,
+			}, "success", task.ID, fmt.Sprintf("Routed to %d MCPs with %d tools", len(mcpNames), result.TotalTools))
+			log.Printf("Task %s routed to MCPs: %v (%d tools)", task.ID, mcpNames, result.TotalTools)
+		}
+	}
 
 	log.Printf("Dispatched task %s (%s) to worker %s", task.ID, task.Title, workerID)
 

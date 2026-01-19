@@ -13,6 +13,7 @@ import (
 	"github.com/fentz26/neona/internal/audit"
 	"github.com/fentz26/neona/internal/connectors/localexec"
 	"github.com/fentz26/neona/internal/controlplane"
+	"github.com/fentz26/neona/internal/mcp"
 	"github.com/fentz26/neona/internal/scheduler"
 	"github.com/fentz26/neona/internal/store"
 	"github.com/spf13/cobra"
@@ -59,6 +60,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Create and start scheduler
 	schedulerCfg := scheduler.DefaultConfig()
 	sched := scheduler.New(s, pdr, connector, schedulerCfg)
+
+	// Initialize MCP router
+	mcpConfig, err := mcp.LoadConfigFromHome()
+	if err != nil {
+		log.Printf("Warning: failed to load MCP config: %v (using defaults)", err)
+		mcpConfig = mcp.DefaultConfig()
+	}
+	registry := mcp.NewRegistry()
+	registry.RegisterDefaults()
+	mcpRouter := mcp.NewRouter(mcpConfig, registry)
+	log.Printf("MCP router initialized with %d servers", registry.Count())
+
+	// Wire MCP router to scheduler and server
+	sched.SetMCPRouter(mcpRouter)
+	server.SetMCPRouter(mcpRouter)
 
 	// Wire scheduler to server for /workers endpoint
 	server.SetScheduler(sched)
