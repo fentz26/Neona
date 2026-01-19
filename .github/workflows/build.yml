@@ -78,6 +78,15 @@ jobs:
           # Windows AMD64
           GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/neona-windows-amd64.exe ./cmd/neona
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          for file in neona-*; do
+            sha256sum "$file" > "${file}.sha256"
+            echo "Generated checksum for $file"
+          done
+          cat *.sha256
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -143,17 +152,24 @@ jobs:
             - **macOS Apple Silicon**: `neona-darwin-arm64`
             - **Windows**: `neona-windows-amd64.exe`
             
+            SHA256 checksums are provided for each binary (`.sha256` files).
+            
             ### Install
             ```bash
-            curl -fsSL https://neona.app/install.sh | bash
+            curl -fsSL https://cli.neona.app/install.sh | bash
             ```
           draft: false
           prerelease: true
           files: |
             dist/neona-linux-amd64
+            dist/neona-linux-amd64.sha256
             dist/neona-linux-arm64
+            dist/neona-linux-arm64.sha256
             dist/neona-darwin-amd64
+            dist/neona-darwin-amd64.sha256
             dist/neona-darwin-arm64
+            dist/neona-darwin-arm64.sha256
             dist/neona-windows-amd64.exe
+            dist/neona-windows-amd64.exe.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.ACTION_TOKEN }}
