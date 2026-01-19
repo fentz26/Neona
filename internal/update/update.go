@@ -386,8 +386,8 @@ func RunSelfUpdate() error {
 	}
 
 	if !hasUpdate {
-		fmt.Println("│  You are already running the latest version.")
-		fmt.Println("└")
+		fmt.Println("│")
+		fmt.Println("└  You are already running the latest version.")
 		return nil
 	}
 

@@ -29,9 +29,6 @@ func init() {
 }
 
 func runUpdate(cmd *cobra.Command, args []string) error {
-	fmt.Println("🔄 Neona Self-Update")
-	fmt.Println()
-
 	if err := update.RunSelfUpdate(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return err
