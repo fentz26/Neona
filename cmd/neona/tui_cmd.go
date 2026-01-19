@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
-	"github.com/fentz26/neona/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -26,12 +26,51 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 2. Launch TUI
-	app := tui.New(apiAddr)
-	if err := app.Run(); err != nil {
-		return fmt.Errorf("TUI error: %w", err)
+	// 2. Launch Python TUI (Rich/Textual)
+	pythonScript, err := findPythonTUI()
+	if err != nil {
+		return fmt.Errorf("failed to find neona-tui: %w\nPlease ensure neona-tui is installed or built", err)
 	}
-	return nil
+
+	return runPythonTUI(pythonScript)
+}
+
+func findPythonTUI() (string, error) {
+	// 1. Check for local dev environment relative to CWD
+	cwd, err := os.Getwd()
+	if err == nil {
+		// Try ./neona-tui/.venv/bin/neona-tui
+		localPath := filepath.Join(cwd, "neona-tui", ".venv", "bin", "neona-tui")
+		if _, err := os.Stat(localPath); err == nil {
+			return localPath, nil
+		}
+	}
+
+	// 2. Check relative to executable (if running from bin/)
+	exe, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exe)
+		siblingPath := filepath.Join(exeDir, "neona-tui", ".venv", "bin", "neona-tui")
+		if _, err := os.Stat(siblingPath); err == nil {
+			return siblingPath, nil
+		}
+	}
+
+	// 3. Check for binary in PATH
+	if path, err := exec.LookPath("neona-tui"); err == nil {
+		return path, nil
+	}
+
+	return "", fmt.Errorf("could not locate neona-tui executable")
+}
+
+func runPythonTUI(path string) error {
+	cmd := exec.Command(path)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	return cmd.Run()
 }
 
 func isDaemonRunning(addr string) bool {
