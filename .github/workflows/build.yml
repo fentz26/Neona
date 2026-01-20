@@ -179,11 +179,30 @@ jobs:
         run: |
           VERSION="v${{ needs.build.outputs.version }}"
           REPO_NAME="${{ github.repository }}"
+          RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${VERSION}"
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          
+          MESSAGE="Version ${VERSION} deployed successfully to production.
+
+Release Details:
+- Repository: ${REPO_NAME}
+- Commit: ${SHORT_SHA}
+- Branch: ${{ github.ref_name }}
+
+Available platforms:
+- Linux (AMD64/ARM64)
+- macOS (Intel/Apple Silicon)
+- Windows (AMD64)
+
+Release: ${RELEASE_URL}"
           
           curl -s --form-string "token=${{ secrets.PUSHOVER_API_TOKEN }}" \
             --form-string "user=${{ secrets.PUSHOVER_USER_KEY }}" \
-            --form-string "title=✅ Deploy Success: ${REPO_NAME}" \
-            --form-string "message=Version ${VERSION} deployed successfully to production" \
+            --form-string "title=[OK] Deploy Success: ${REPO_NAME}" \
+            --form-string "message=${MESSAGE}" \
+            --form-string "url=${RELEASE_URL}" \
+            --form-string "url_title=View Release" \
             --form-string "priority=0" \
             --form-string "sound=pushover" \
             https://api.pushover.net/1/messages.json
@@ -194,11 +213,25 @@ jobs:
           VERSION="v${{ needs.build.outputs.version }}"
           REPO_NAME="${{ github.repository }}"
           WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          
+          MESSAGE="Version ${VERSION} deployment failed.
+
+Details:
+- Repository: ${REPO_NAME}
+- Commit: ${SHORT_SHA}
+- Branch: ${{ github.ref_name }}
+- Workflow Run: ${{ github.run_id }}
+
+Check the workflow logs for more information."
           
           curl -s --form-string "token=${{ secrets.PUSHOVER_API_TOKEN }}" \
             --form-string "user=${{ secrets.PUSHOVER_USER_KEY }}" \
-            --form-string "title=❌ Deploy Failed: ${REPO_NAME}" \
-            --form-string "message=Version ${VERSION} deployment failed. Check: ${WORKFLOW_URL}" \
+            --form-string "title=[FAIL] Deploy Failed: ${REPO_NAME}" \
+            --form-string "message=${MESSAGE}" \
+            --form-string "url=${WORKFLOW_URL}" \
+            --form-string "url_title=View Workflow Logs" \
             --form-string "priority=1" \
             --form-string "sound=siren" \
             https://api.pushover.net/1/messages.json

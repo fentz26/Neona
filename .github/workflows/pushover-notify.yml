@@ -15,6 +15,18 @@ on:
         description: 'URL to the workflow run'
         required: false
         type: string
+      release_url:
+        description: 'URL to the release page'
+        required: false
+        type: string
+      commit_sha:
+        description: 'Commit SHA for this release'
+        required: false
+        type: string
+      branch:
+        description: 'Branch name'
+        required: false
+        type: string
     secrets:
       PUSHOVER_USER_KEY:
         required: true
@@ -29,27 +41,57 @@ jobs:
         run: |
           REPO_NAME="${{ github.repository }}"
           VERSION="${{ inputs.version }}"
+          COMMIT_SHA="${{ inputs.commit_sha }}"
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          BRANCH="${{ inputs.branch }}"
           
           if [ "${{ inputs.status }}" == "success" ]; then
-            TITLE="✅ Deploy Success: ${REPO_NAME}"
-            MESSAGE="Version ${VERSION} deployed successfully to production"
+            RELEASE_URL="${{ inputs.release_url }}"
+            if [ -z "${RELEASE_URL}" ]; then
+              RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${VERSION}"
+            fi
+            
+            TITLE="[OK] Deploy Success: ${REPO_NAME}"
+            MESSAGE="Version ${VERSION} deployed successfully to production.
+
+Release Details:
+- Repository: ${REPO_NAME}
+- Commit: ${SHORT_SHA}
+- Branch: ${BRANCH}
+
+Release: ${RELEASE_URL}"
             PRIORITY="0"
             SOUND="pushover"
+            URL="${RELEASE_URL}"
+            URL_TITLE="View Release"
           else
             WORKFLOW_URL="${{ inputs.workflow_url }}"
             if [ -z "${WORKFLOW_URL}" ]; then
               WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             fi
-            TITLE="❌ Deploy Failed: ${REPO_NAME}"
-            MESSAGE="Version ${VERSION} deployment failed. Check: ${WORKFLOW_URL}"
+            
+            TITLE="[FAIL] Deploy Failed: ${REPO_NAME}"
+            MESSAGE="Version ${VERSION} deployment failed.
+
+Details:
+- Repository: ${REPO_NAME}
+- Commit: ${SHORT_SHA}
+- Branch: ${BRANCH}
+- Workflow Run: ${{ github.run_id }}
+
+Check the workflow logs for more information."
             PRIORITY="1"
             SOUND="siren"
+            URL="${WORKFLOW_URL}"
+            URL_TITLE="View Workflow Logs"
           fi
           
           curl -s --form-string "token=${{ secrets.PUSHOVER_API_TOKEN }}" \
             --form-string "user=${{ secrets.PUSHOVER_USER_KEY }}" \
             --form-string "title=${TITLE}" \
             --form-string "message=${MESSAGE}" \
+            --form-string "url=${URL}" \
+            --form-string "url_title=${URL_TITLE}" \
             --form-string "priority=${PRIORITY}" \
             --form-string "sound=${SOUND}" \
             https://api.pushover.net/1/messages.json
