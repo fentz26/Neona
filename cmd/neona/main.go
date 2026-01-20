@@ -34,10 +34,7 @@ var rootCmd = &cobra.Command{
 			}
 		}
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// Default to running TUI
-		return runTUI(cmd, args)
-	},
+	// No RunE - defaults to showing help when no subcommand is provided
 }
 
 var (
