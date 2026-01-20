@@ -502,9 +502,9 @@ func RunSelfUpdate() error {
 	spin = newSpinner(" Verifying new update . . . .")
 	spin.Start()
 
-	// Exec new version to verify
-	newBin, _ := os.Executable()
-	cmd := exec.Command(newBin, "version")
+	// Exec new version to verify - use currentBin (the newly installed binary path)
+	// NOT os.Executable() which still points to the running old binary
+	cmd := exec.Command(currentBin, "version")
 	// captured output isn't needed, just exit code success
 	if err := cmd.Run(); err != nil {
 		spin.StopWithSymbol("✗")
