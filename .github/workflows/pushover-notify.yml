@@ -54,12 +54,12 @@ jobs:
             TITLE="[OK] Deploy Success: ${REPO_NAME}"
             MESSAGE="Version ${VERSION} deployed successfully to production.
 
-Release Details:
-- Repository: ${REPO_NAME}
-- Commit: ${SHORT_SHA}
-- Branch: ${BRANCH}
+          Release Details:
+          - Repository: ${REPO_NAME}
+          - Commit: ${SHORT_SHA}
+          - Branch: ${BRANCH}
 
-Release: ${RELEASE_URL}"
+          Release: ${RELEASE_URL}"
             PRIORITY="0"
             SOUND="pushover"
             URL="${RELEASE_URL}"
@@ -73,13 +73,13 @@ Release: ${RELEASE_URL}"
             TITLE="[FAIL] Deploy Failed: ${REPO_NAME}"
             MESSAGE="Version ${VERSION} deployment failed.
 
-Details:
-- Repository: ${REPO_NAME}
-- Commit: ${SHORT_SHA}
-- Branch: ${BRANCH}
-- Workflow Run: ${{ github.run_id }}
+          Details:
+          - Repository: ${REPO_NAME}
+          - Commit: ${SHORT_SHA}
+          - Branch: ${BRANCH}
+          - Workflow Run: ${{ github.run_id }}
 
-Check the workflow logs for more information."
+          Check the workflow logs for more information."
             PRIORITY="1"
             SOUND="siren"
             URL="${WORKFLOW_URL}"
